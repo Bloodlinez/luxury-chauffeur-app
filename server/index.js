@@ -70,6 +70,9 @@ const ALLOWED_FLEET_CATEGORIES = {
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+const SERVICE_AREA_STATES = ['NJ', 'NY', 'PA'];
+const NJ_PICKUP_AIRPORTS = ['EWR', 'TEB', 'ACY', 'TTN'];
+
 const fleetCatalog = [
   {
     id: 'business-class',
@@ -80,7 +83,7 @@ const fleetCatalog = [
     seats: 4,
     luggage: 3,
     amenities: ['Professional chauffeur', 'Climate control', 'Charging', 'Bottled water'],
-    image: 'https://images.unsplash.com/photo-1553440569-bcc63803a83d?auto=format&fit=crop&w=900&q=80',
+    image: '/fleet/business-class.jpg',
     basePrice: 220,
     available: true,
   },
@@ -93,7 +96,7 @@ const fleetCatalog = [
     seats: 4,
     luggage: 3,
     amenities: ['Executive leather seating', 'Quiet cabin', 'Complimentary refreshments', 'Privacy glass'],
-    image: 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=900&q=80',
+    image: '/fleet/first-class.jpg',
     basePrice: 310,
     available: true,
   },
@@ -106,7 +109,7 @@ const fleetCatalog = [
     seats: 6,
     luggage: 5,
     amenities: ['Extra luggage room', 'Executive seating', 'Premium climate control', 'Airport meet-and-greet'],
-    image: 'https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&w=900&q=80',
+    image: '/fleet/luxury-suv.jpg',
     basePrice: 380,
     available: true,
   },
@@ -180,18 +183,48 @@ async function initializeDatabase() {
   }
 }
 
+function formatAddressLabel(line1, city, state, postal) {
+  const parts = [line1, city, [state, postal].filter(Boolean).join(' ')].filter(Boolean);
+  return parts.join(', ');
+}
+
+function formatEndpointLabel({ airportCode, line1, city, state, postal }) {
+  if (airportCode) return airportCode;
+  return formatAddressLabel(line1, city, state, postal) || 'Address pending';
+}
+
 function getPopulationSummary(rows) {
-  return rows.map((row) => ({
-    ...row,
-    customer: row.customer_name,
-    pickup: row.pickup_airport_code,
-    destination: row.destination_airport_code,
-    date: row.pickup_date,
-    time: row.pickup_time,
-    category: row.vehicle_category,
-    total: Number(row.quote_total ?? 0),
-    status: String(row.status || 'pending_confirmation'),
-  }));
+  return rows.map((row) => {
+    const pickup = formatEndpointLabel({
+      airportCode: row.pickup_airport_code,
+      line1: row.pickup_address_line1,
+      city: row.pickup_city,
+      state: row.pickup_state,
+      postal: row.pickup_postal,
+    });
+    const destination = formatEndpointLabel({
+      airportCode: row.destination_airport_code,
+      line1: row.destination_address_line1,
+      city: row.destination_city,
+      state: row.destination_state,
+      postal: row.destination_postal,
+    });
+    return {
+      ...row,
+      customer: row.customer_name,
+      pickup,
+      destination,
+      pickupLabel: pickup,
+      destinationLabel: destination,
+      transferType: row.transfer_type || null,
+      date: row.pickup_date,
+      time: row.pickup_time,
+      category: row.vehicle_category,
+      total: Number(row.quote_total ?? 0),
+      status: String(row.status || 'pending_confirmation'),
+      addressVerified: Boolean(row.address_verified),
+    };
+  });
 }
 
 async function listAirports() {
@@ -215,14 +248,15 @@ async function listFleet() {
       seats: Number(row.seats),
       luggage: Number(row.luggage),
       amenities: ['Professional chauffeur', 'Climate control', 'Executive comfort'],
-      image: row.image_url,
+      image: row.image_url || `/fleet/${row.slug}.jpg`,
+      imageReady: Boolean(row.image_url),
       basePrice: Number(row.base_price),
       price: Number(row.base_price),
       available: row.active,
     }));
   }
 
-  return fleetCatalog.map((entry) => ({ ...entry, price: entry.basePrice }));
+  return fleetCatalog.map((entry) => ({ ...entry, price: entry.basePrice, imageReady: false }));
 }
 
 async function listReservationsForUser(userId) {
@@ -285,26 +319,18 @@ async function findUserById(id) {
 }
 
 async function validAirportRoute(originCode, destinationCode) {
-  let airports = airportCatalog;
-  if (pool) {
-    const result = await pool.query(
-      'select code, state from public.airports where active = true and code = any($1::text[])',
-      [[originCode, destinationCode]],
-    );
-    airports = result.rows;
-  }
-  const origin = airports.find((airport) => airport.code === originCode);
-  const destination = airports.find((airport) => airport.code === destinationCode);
-
+  const origin = await findAirport(originCode);
+  const destination = await findAirport(destinationCode);
   if (!origin || !destination) return false;
-  if (origin.state !== 'NJ') return false;
-  return ['NJ', 'NY', 'PA'].includes(destination.state);
+  if (!NJ_PICKUP_AIRPORTS.includes(origin.code)) return false;
+  return SERVICE_AREA_STATES.includes(destination.state);
 }
 
 function getPaymentQuote(category, payload) {
   const base = category.basePrice ?? category.price ?? 220;
   const serviceFee = 0.08 * base;
-  const airportSurcharge = payload.pickup === 'EWR' || payload.destination === 'JFK' ? 35 : 0;
+  const airportCode = payload.quoteAirportCode || payload.pickup || payload.destination;
+  const airportSurcharge = airportCode === 'EWR' || airportCode === 'JFK' ? 35 : 0;
   const total = Math.round((base + serviceFee + airportSurcharge) * 100) / 100;
 
   return {
@@ -315,22 +341,119 @@ function getPaymentQuote(category, payload) {
   };
 }
 
+function parseWholeNumber(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : null;
+  }
+  const raw = String(value ?? '').trim();
+  if (!/^\d+$/.test(raw)) return null;
+  return Number(raw);
+}
+
 function getRideCounts(payload, category) {
-  const passengers = Number(payload.passengers ?? 1);
-  const luggage = Number(payload.luggage ?? 0);
-  if (!Number.isInteger(passengers) || passengers < 1 || passengers > category.seats) {
+  const passengers = parseWholeNumber(payload.passengers ?? 1);
+  const luggage = parseWholeNumber(payload.luggage ?? 0);
+  if (passengers === null || passengers < 1 || passengers > category.seats) {
     return {
-      error: `This vehicle accommodates 1 to ${category.seats} passengers.`,
+      error: `${category.category} accommodates 1 to ${category.seats} passengers.`,
       field: 'passengers',
     };
   }
-  if (!Number.isInteger(luggage) || luggage < 0 || luggage > category.luggage) {
+  if (luggage === null || luggage < 0 || luggage > category.luggage) {
     return {
-      error: `This vehicle accommodates up to ${category.luggage} bags.`,
+      error: `${category.category} accommodates 0 to ${category.luggage} bags.`,
       field: 'luggage',
     };
   }
   return { passengers, luggage };
+}
+
+function normalizeState(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function readAddress(payload, prefix) {
+  return {
+    line1: String(payload?.[`${prefix}AddressLine1`] || payload?.[`${prefix}_address_line1`] || '').trim(),
+    line2: String(payload?.[`${prefix}AddressLine2`] || payload?.[`${prefix}_address_line2`] || '').trim(),
+    city: String(payload?.[`${prefix}City`] || payload?.[`${prefix}_city`] || '').trim(),
+    state: normalizeState(payload?.[`${prefix}State`] || payload?.[`${prefix}_state`]),
+    postal: String(payload?.[`${prefix}Postal`] || payload?.[`${prefix}Zip`] || payload?.[`${prefix}_postal`] || '').trim(),
+  };
+}
+
+function validateServiceAddress(address, fieldPrefix) {
+  const errors = {};
+  if (!address.line1) errors[`${fieldPrefix}AddressLine1`] = 'Enter the street address.';
+  if (!address.city) errors[`${fieldPrefix}City`] = 'Enter the city.';
+  if (!SERVICE_AREA_STATES.includes(address.state)) {
+    errors[`${fieldPrefix}State`] = 'Address must be in New Jersey, New York, or Pennsylvania.';
+  }
+  if (!address.postal) errors[`${fieldPrefix}Postal`] = 'Enter the ZIP code.';
+  else if (!/^\d{5}(-\d{4})?$/.test(address.postal)) {
+    errors[`${fieldPrefix}Postal`] = 'Enter a valid ZIP code.';
+  }
+  return errors;
+}
+
+async function findAirport(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  if (!normalized) return null;
+  if (pool) {
+    const result = await pool.query(
+      'select code, state from public.airports where active = true and code = $1',
+      [normalized],
+    );
+    return result.rows[0] || null;
+  }
+  return airportCatalog.find((airport) => airport.code === normalized) || null;
+}
+
+async function validateTransfer(payload) {
+  const transferType = String(payload.transferType || payload.transfer_type || '').trim();
+  const errors = {};
+  if (!['from_airport', 'to_airport'].includes(transferType)) {
+    errors.transferType = 'Choose From Airport or To Airport.';
+    return { errors, transferType: null };
+  }
+
+  let pickupAirportCode = null;
+  let destinationAirportCode = null;
+  let pickupAddress = { line1: '', line2: '', city: '', state: '', postal: '' };
+  let destinationAddress = { line1: '', line2: '', city: '', state: '', postal: '' };
+  let quoteAirportCode = null;
+
+  if (transferType === 'from_airport') {
+    const airport = await findAirport(payload.pickupAirport || payload.pickup);
+    if (!airport || !NJ_PICKUP_AIRPORTS.includes(airport.code)) {
+      errors.pickupAirport = 'Select an approved New Jersey pickup airport (EWR, TEB, ACY, or TTN).';
+    } else {
+      pickupAirportCode = airport.code;
+      quoteAirportCode = airport.code;
+    }
+    destinationAddress = readAddress(payload, 'destination');
+    Object.assign(errors, validateServiceAddress(destinationAddress, 'destination'));
+  } else {
+    pickupAddress = readAddress(payload, 'pickup');
+    Object.assign(errors, validateServiceAddress(pickupAddress, 'pickup'));
+    const airport = await findAirport(payload.destinationAirport || payload.destination);
+    if (!airport || !SERVICE_AREA_STATES.includes(airport.state)) {
+      errors.destinationAirport = 'Select an approved destination airport in New Jersey, New York, or Pennsylvania.';
+    } else {
+      destinationAirportCode = airport.code;
+      quoteAirportCode = airport.code;
+    }
+  }
+
+  return {
+    errors,
+    transferType,
+    pickupAirportCode,
+    destinationAirportCode,
+    pickupAddress,
+    destinationAddress,
+    quoteAirportCode,
+  };
 }
 
 function isBannedVehicleModel(value) {
@@ -755,23 +878,65 @@ app.post('/api/auth/logout', (req, res) => {
   res.status(204).end();
 });
 
-app.post('/api/quotes', async (req, res) => {
-  const { pickup, destination, vehicleId, category: categoryName } = req.body || {};
-  const errors = {};
-  if (!pickup) errors.pickup = 'Select a New Jersey pickup airport.';
-  if (!destination) errors.destination = 'Select an approved destination airport.';
-  if (Object.keys(errors).length) {
-    return validationError(res, 'Pickup and destination are required.', errors);
-  }
-  if (!await validAirportRoute(pickup, destination)) {
-    return validationError(res, 'This route is not available under the current launch policy.', {
-      pickup: 'Pickups must start at an approved New Jersey airport.',
-      destination: 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.',
+app.get('/api/address-suggest', async (req, res) => {
+  const query = String(req.query.q || '').trim();
+  const mapboxToken = process.env.MAPBOX_TOKEN;
+  if (!mapboxToken || mapboxToken.startsWith('replace-with')) {
+    return res.json({
+      providerConfigured: false,
+      message: 'Address autocomplete is unavailable until an address provider token is configured. Manual entry remains supported.',
+      suggestions: [],
     });
+  }
+  if (query.length < 3) {
+    return res.json({ providerConfigured: true, suggestions: [] });
+  }
+
+  try {
+    const url = new URL(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json`);
+    url.searchParams.set('access_token', mapboxToken);
+    url.searchParams.set('country', 'US');
+    url.searchParams.set('types', 'address');
+    url.searchParams.set('limit', '5');
+    const response = await fetch(url);
+    if (!response.ok) {
+      return res.status(502).json({ providerConfigured: true, message: 'Address suggestions are temporarily unavailable.', suggestions: [] });
+    }
+    const data = await response.json();
+    const suggestions = (data.features || []).map((feature) => {
+      const context = feature.context || [];
+      const region = context.find((item) => String(item.id).startsWith('region'))?.short_code?.replace(/^US-/, '') || '';
+      const place = context.find((item) => String(item.id).startsWith('place'))?.text || '';
+      const postcode = context.find((item) => String(item.id).startsWith('postcode'))?.text || '';
+      return {
+        label: feature.place_name,
+        line1: feature.address ? `${feature.address} ${feature.text}` : feature.text,
+        city: place,
+        state: region,
+        postal: postcode,
+        verifiedByProvider: false,
+      };
+    }).filter((item) => SERVICE_AREA_STATES.includes(String(item.state || '').toUpperCase()));
+    res.json({
+      providerConfigured: true,
+      suggestions,
+      notice: 'Suggested addresses still require service-area validation and are not treated as fully geocoded confirmation.',
+    });
+  } catch {
+    res.status(502).json({ providerConfigured: true, message: 'Address suggestions failed.', suggestions: [] });
+  }
+});
+
+app.post('/api/quotes', async (req, res) => {
+  const transfer = await validateTransfer(req.body || {});
+  if (Object.keys(transfer.errors).length) {
+    return validationError(res, 'Please complete a valid airport transfer route.', transfer.errors);
   }
 
   const fleetEntries = await listFleet();
-  const category = fleetEntries.find((item) => item.id === vehicleId || item.category === categoryName);
+  const category = fleetEntries.find(
+    (item) => item.id === req.body?.vehicleId || item.category === req.body?.category,
+  );
   if (!category) {
     return validationError(res, 'Select a valid vehicle category.', {
       category: 'Choose Business Class, First Class, or Luxury SUV.',
@@ -782,19 +947,27 @@ app.post('/api/quotes', async (req, res) => {
     return validationError(res, rideCounts.error, { [rideCounts.field]: rideCounts.error });
   }
 
-  const quote = getPaymentQuote(category, { pickup, destination });
-  res.json({ category: category.category, passengers: rideCounts.passengers, luggage: rideCounts.luggage, quote });
+  const quote = getPaymentQuote(category, { quoteAirportCode: transfer.quoteAirportCode });
+  res.json({
+    category: category.category,
+    passengers: rideCounts.passengers,
+    luggage: rideCounts.luggage,
+    transferType: transfer.transferType,
+    quote,
+  });
 });
 
 app.post('/api/reservations', async (req, res) => {
   const payload = req.body || {};
   const errors = {};
-  if (!payload.pickup) errors.pickup = 'Select a New Jersey pickup airport.';
-  if (!payload.destination) errors.destination = 'Select an approved destination airport.';
   if (!payload.date) errors.date = 'Choose a pickup date.';
   if (!payload.time) errors.time = 'Choose a pickup time.';
   if (!String(payload.name || '').trim()) errors.name = 'Enter the lead passenger name.';
   if (!String(payload.phone || '').trim()) errors.phone = 'Enter a mobile number for day-of coordination.';
+
+  const transfer = await validateTransfer(payload);
+  Object.assign(errors, transfer.errors);
+
   if (Object.keys(errors).length) {
     return validationError(res, 'Please complete the required booking details.', errors);
   }
@@ -804,18 +977,6 @@ app.post('/api/reservations', async (req, res) => {
       date: 'Pickup must be scheduled in the future.',
       time: 'Choose a pickup time later than now.',
     });
-  }
-
-  const isValidRoute = await validAirportRoute(payload.pickup, payload.destination);
-  if (!isValidRoute) {
-    return validationError(
-      res,
-      'This route is not available under the current launch policy. Pickup must be a New Jersey airport and destination must be an approved airport in New Jersey, New York, or Pennsylvania.',
-      {
-        pickup: 'Pickups must start at an approved New Jersey airport.',
-        destination: 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.',
-      },
-    );
   }
 
   req.user = await authenticateRequest(req);
@@ -833,7 +994,16 @@ app.post('/api/reservations', async (req, res) => {
   if (rideCounts.error) {
     return validationError(res, rideCounts.error, { [rideCounts.field]: rideCounts.error });
   }
-  const quote = getPaymentQuote(fleetEntry, payload);
+  const quote = getPaymentQuote(fleetEntry, { quoteAirportCode: transfer.quoteAirportCode });
+
+  const pickupLabel = formatEndpointLabel({
+    airportCode: transfer.pickupAirportCode,
+    ...transfer.pickupAddress,
+  });
+  const destinationLabel = formatEndpointLabel({
+    airportCode: transfer.destinationAirportCode,
+    ...transfer.destinationAddress,
+  });
 
   const reservation = {
     id: `res-${randomUUID().slice(0, 8)}`,
@@ -843,16 +1013,29 @@ app.post('/api/reservations', async (req, res) => {
     customer_phone: String(payload.phone || '').trim(),
     passenger_count: rideCounts.passengers,
     luggage_count: rideCounts.luggage,
-    pickup_airport_code: payload.pickup,
-    destination_airport_code: payload.destination,
+    transfer_type: transfer.transferType,
+    pickup_airport_code: transfer.pickupAirportCode,
+    destination_airport_code: transfer.destinationAirportCode,
+    pickup_address_line1: transfer.pickupAddress.line1 || null,
+    pickup_address_line2: transfer.pickupAddress.line2 || null,
+    pickup_city: transfer.pickupAddress.city || null,
+    pickup_state: transfer.pickupAddress.state || null,
+    pickup_postal: transfer.pickupAddress.postal || null,
+    destination_address_line1: transfer.destinationAddress.line1 || null,
+    destination_address_line2: transfer.destinationAddress.line2 || null,
+    destination_city: transfer.destinationAddress.city || null,
+    destination_state: transfer.destinationAddress.state || null,
+    destination_postal: transfer.destinationAddress.postal || null,
+    address_verified: false,
     pickup_date: payload.date,
     pickup_time: payload.time,
     flight_number: payload.flightNumber || payload.flight_number || '',
     vehicle_category: fleetEntry.category,
     quote_total: quote.total,
     total: quote.total,
-    pickup: payload.pickup,
-    destination: payload.destination,
+    pickup: pickupLabel,
+    destination: destinationLabel,
+    transferType: transfer.transferType,
     date: payload.date,
     time: payload.time,
     category: fleetEntry.category,
@@ -870,8 +1053,20 @@ app.post('/api/reservations', async (req, res) => {
           customer_phone,
           passenger_count,
           luggage_count,
+          transfer_type,
           pickup_airport_code,
           destination_airport_code,
+          pickup_address_line1,
+          pickup_address_line2,
+          pickup_city,
+          pickup_state,
+          pickup_postal,
+          destination_address_line1,
+          destination_address_line2,
+          destination_city,
+          destination_state,
+          destination_postal,
+          address_verified,
           pickup_date,
           pickup_time,
           flight_number,
@@ -879,7 +1074,11 @@ app.post('/api/reservations', async (req, res) => {
           quote_total,
           status,
           notes
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ) values (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+          $21, $22, $23, $24, $25, $26, $27
+        )
         returning *
       `,
       [
@@ -889,8 +1088,20 @@ app.post('/api/reservations', async (req, res) => {
         reservation.customer_phone,
         reservation.passenger_count,
         reservation.luggage_count,
+        reservation.transfer_type,
         reservation.pickup_airport_code,
         reservation.destination_airport_code,
+        reservation.pickup_address_line1,
+        reservation.pickup_address_line2,
+        reservation.pickup_city,
+        reservation.pickup_state,
+        reservation.pickup_postal,
+        reservation.destination_address_line1,
+        reservation.destination_address_line2,
+        reservation.destination_city,
+        reservation.destination_state,
+        reservation.destination_postal,
+        reservation.address_verified,
         reservation.pickup_date,
         reservation.pickup_time,
         reservation.flight_number,
@@ -909,7 +1120,7 @@ app.post('/api/reservations', async (req, res) => {
 
   res.status(201).json({
     message: 'Reservation created successfully.',
-    reservation,
+    reservation: getPopulationSummary([reservation])[0],
     quote,
   });
 });

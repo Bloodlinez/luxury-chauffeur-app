@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
+import BookingPage from './BookingPage.jsx';
 import {
   Field,
+  FleetVisual,
   FormBanner,
+  formatRoute,
   formatStatus,
   isBannedVehicleModel,
-  isFuturePickup,
   isValidEmail,
   shortReference,
   useFormErrors,
@@ -22,27 +24,6 @@ const airportOptions = [
   { code: 'ABE', name: 'Lehigh Valley International Airport', state: 'PA' },
   { code: 'PIT', name: 'Pittsburgh International Airport', state: 'PA' },
 ];
-
-const defaultBooking = {
-  name: '',
-  email: '',
-  phone: '',
-  pickup: 'EWR',
-  destination: 'JFK',
-  date: '',
-  time: '',
-  flightNumber: '',
-  passengers: 2,
-  luggage: 2,
-  notes: '',
-  category: 'Business Class',
-};
-
-function tomorrowDate() {
-  const date = new Date();
-  date.setDate(date.getDate() + 1);
-  return date.toISOString().slice(0, 10);
-}
 
 function App() {
   const [fleet, setFleet] = useState([]);
@@ -302,7 +283,7 @@ function HomePage({ fleet, airports }) {
         <div className="fleet-grid">
           {fleet.map((vehicle) => (
             <article key={vehicle.id} className="fleet-card">
-              <img src={vehicle.image} alt={vehicle.name} />
+              <FleetVisual slug={vehicle.id} name={vehicle.name} description={vehicle.description} image={vehicle.image} />
               <div className="fleet-card-body">
                 <div className="fleet-head">
                   <div>
@@ -351,7 +332,7 @@ function FleetPage({ fleet }) {
       <div className="fleet-list">
         {fleet.map((vehicle) => (
           <div className="fleet-row" key={vehicle.id}>
-            <img src={vehicle.image} alt={vehicle.name} />
+            <FleetVisual slug={vehicle.id} name={vehicle.name} description={vehicle.description} image={vehicle.image} />
             <div className="fleet-row-body">
               <div className="fleet-head">
                 <div>
@@ -375,439 +356,6 @@ function FleetPage({ fleet }) {
   );
 }
 
-function BookingPage({ airports, fleet, user, onBookingSuccess }) {
-  const navigate = useNavigate();
-  const [booking, setBooking] = useState({ ...defaultBooking, date: tomorrowDate(), time: '18:00' });
-  const [steps, setSteps] = useState({ current: 1, total: 4 });
-  const [submitted, setSubmitted] = useState(false);
-  const [reservation, setReservation] = useState(null);
-  const [quote, setQuote] = useState(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isQuoting, setIsQuoting] = useState(false);
-  const { errors, clearErrors, applyErrors, applyApiErrors, revalidateField, setFieldError } = useFormErrors();
-
-  const njAirports = useMemo(() => airports.filter((airport) => airport.state === 'NJ'), [airports]);
-  const destinationAirports = useMemo(
-    () => airports.filter((airport) => ['NJ', 'NY', 'PA'].includes(airport.state)),
-    [airports],
-  );
-
-  const selectedCategory = useMemo(
-    () => fleet.find((item) => item.category === booking.category) || fleet[0],
-    [fleet, booking.category],
-  );
-
-  const routeAllowed = useMemo(() => {
-    const origin = airports.find((airport) => airport.code === booking.pickup);
-    const destination = airports.find((airport) => airport.code === booking.destination);
-    if (!origin || !destination) return false;
-    return origin.state === 'NJ' && ['NJ', 'NY', 'PA'].includes(destination.state);
-  }, [airports, booking.pickup, booking.destination]);
-
-  const updateBooking = (name, value) => {
-    setBooking((current) => ({ ...current, [name]: value }));
-    setQuote(null);
-    if (name === 'pickup') {
-      revalidateField('pickup', value, (next) => {
-        const origin = airports.find((airport) => airport.code === next);
-        return !origin || origin.state !== 'NJ' ? 'Pickups must start at an approved New Jersey airport.' : '';
-      });
-    }
-    if (name === 'destination') {
-      revalidateField('destination', value, (next) => {
-        const destination = airports.find((airport) => airport.code === next);
-        return !destination || !['NJ', 'NY', 'PA'].includes(destination.state)
-          ? 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.'
-          : '';
-      });
-    }
-    if (name === 'date' || name === 'time') {
-      const nextDate = name === 'date' ? value : booking.date;
-      const nextTime = name === 'time' ? value : booking.time;
-      revalidateField('date', nextDate, (next) => (!next ? 'Choose a pickup date.' : (!isFuturePickup(next, nextTime) ? 'Pickup must be scheduled in the future.' : '')));
-      revalidateField('time', nextTime, (next) => (!next ? 'Choose a pickup time.' : (!isFuturePickup(nextDate, next) ? 'Choose a pickup time later than now.' : '')));
-    }
-    if (name === 'category') {
-      revalidateField('category', value, (next) => (!next ? 'Select a vehicle category.' : ''));
-    }
-    if (name === 'passengers') {
-      revalidateField('passengers', value, (next) => {
-        const count = Number(next);
-        if (!Number.isInteger(count) || count < 1) return 'Enter at least 1 passenger.';
-        if (selectedCategory && count > selectedCategory.seats) {
-          return `${selectedCategory.category} accommodates up to ${selectedCategory.seats} passengers.`;
-        }
-        return '';
-      });
-    }
-    if (name === 'luggage') {
-      revalidateField('luggage', value, (next) => {
-        const count = Number(next);
-        if (!Number.isInteger(count) || count < 0) return 'Enter a valid luggage count.';
-        if (selectedCategory && count > selectedCategory.luggage) {
-          return `${selectedCategory.category} accommodates up to ${selectedCategory.luggage} bags.`;
-        }
-        return '';
-      });
-    }
-    if (name === 'name') revalidateField('name', value, (next) => (!String(next).trim() ? 'Enter the lead passenger name.' : ''));
-    if (name === 'phone') revalidateField('phone', value, (next) => (!String(next).trim() ? 'Enter a mobile number for day-of coordination.' : ''));
-  };
-
-  const handleChange = (event) => {
-    updateBooking(event.target.name, event.target.value);
-  };
-
-  const validateStep = (step) => {
-    const nextErrors = {};
-    if (step === 1) {
-      const origin = airports.find((airport) => airport.code === booking.pickup);
-      const destination = airports.find((airport) => airport.code === booking.destination);
-      if (!origin || origin.state !== 'NJ') nextErrors.pickup = 'Pickups must start at an approved New Jersey airport.';
-      if (!destination || !['NJ', 'NY', 'PA'].includes(destination.state)) {
-        nextErrors.destination = 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.';
-      }
-      if (!booking.date) nextErrors.date = 'Choose a pickup date.';
-      if (!booking.time) nextErrors.time = 'Choose a pickup time.';
-      if (booking.date && booking.time && !isFuturePickup(booking.date, booking.time)) {
-        nextErrors.date = 'Pickup must be scheduled in the future.';
-        nextErrors.time = 'Choose a pickup time later than now.';
-      }
-      if (!routeAllowed && !nextErrors.pickup && !nextErrors.destination) {
-        nextErrors.pickup = 'This airport-to-airport route is not available under the current service policy.';
-      }
-    }
-    if (step === 2) {
-      if (!selectedCategory) nextErrors.category = 'Select a vehicle category.';
-      const passengers = Number(booking.passengers);
-      const luggage = Number(booking.luggage);
-      if (!Number.isInteger(passengers) || passengers < 1) nextErrors.passengers = 'Enter at least 1 passenger.';
-      else if (selectedCategory && passengers > selectedCategory.seats) {
-        nextErrors.passengers = `${selectedCategory.category} accommodates up to ${selectedCategory.seats} passengers.`;
-      }
-      if (!Number.isInteger(luggage) || luggage < 0) nextErrors.luggage = 'Enter a valid luggage count.';
-      else if (selectedCategory && luggage > selectedCategory.luggage) {
-        nextErrors.luggage = `${selectedCategory.category} accommodates up to ${selectedCategory.luggage} bags.`;
-      }
-    }
-    if (step === 3) {
-      if (!booking.name.trim()) nextErrors.name = 'Enter the lead passenger name.';
-      if (!booking.phone.trim()) nextErrors.phone = 'Enter a mobile number for day-of coordination.';
-      if (!user) nextErrors.form = 'Sign in to continue with passenger details tied to your account.';
-    }
-    return applyErrors(nextErrors, ['pickup', 'destination', 'date', 'time', 'category', 'passengers', 'luggage', 'name', 'phone']);
-  };
-
-  const handleContinue = async () => {
-    if (!validateStep(steps.current)) return;
-
-    if (steps.current === 3) {
-      setIsQuoting(true);
-      try {
-        const response = await fetch('/api/quotes', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pickup: booking.pickup,
-            destination: booking.destination,
-            vehicleId: selectedCategory.id,
-            passengers: booking.passengers,
-            luggage: booking.luggage,
-          }),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          applyApiErrors(data, 'Unable to calculate a quote.');
-          return;
-        }
-        setQuote(data.quote);
-        clearErrors();
-        setSteps((current) => ({ ...current, current: 4 }));
-      } catch {
-        applyApiErrors({ message: 'Unable to reach pricing services. Please try again.' });
-      } finally {
-        setIsQuoting(false);
-      }
-      return;
-    }
-
-    clearErrors();
-    setSteps((current) => ({ ...current, current: current.current + 1 }));
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    if (!user) {
-      navigate('/login');
-      return;
-    }
-    if (!quote) {
-      setFieldError('form', 'Refresh the quote before submitting your request.');
-      return;
-    }
-    if (isSubmitting) return;
-
-    setIsSubmitting(true);
-    try {
-      const response = await fetch('/api/reservations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          ...booking,
-          vehicleId: selectedCategory.id,
-          category: selectedCategory.category,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        applyApiErrors(data, 'Unable to submit reservation.');
-        return;
-      }
-      setReservation(data.reservation);
-      setQuote(data.quote || quote);
-      setSubmitted(true);
-      clearErrors();
-      onBookingSuccess();
-    } catch {
-      applyApiErrors({ message: 'Network error while submitting. Please try again.' });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  return (
-    <main className="page-shell booking-layout">
-      <div className="booking-form-panel">
-        <div className="section-head left">
-          <span className="eyebrow">Reserve your journey</span>
-          <h2>Airport chauffeur booking.</h2>
-          <p className="panel-copy">Airport-to-airport transfers only. Residential and hotel pickups are not offered in this launch.</p>
-        </div>
-
-        <div className="booking-progress" aria-label="Reservation steps">
-          {['Route', 'Vehicle', 'Passenger', 'Review'].map((label, index) => {
-            const step = index + 1;
-            return (
-              <button
-                type="button"
-                key={label}
-                className={`booking-step ${steps.current === step ? 'active' : ''} ${steps.current > step ? 'complete' : ''}`}
-                disabled={step > steps.current}
-                onClick={() => {
-                  clearErrors();
-                  setSteps((current) => ({ ...current, current: step }));
-                }}
-              >
-                <span>0{step}</span>{label}
-              </button>
-            );
-          })}
-        </div>
-
-        {!submitted ? (
-          <form className="booking-form" onSubmit={handleSubmit} noValidate>
-            {steps.current === 1 && (
-              <>
-                <div className="field-grid two-col">
-                  <Field name="pickup" label="Pickup airport" error={errors.pickup}>
-                    {(props) => (
-                      <select {...props} value={booking.pickup} onChange={handleChange}>
-                        {njAirports.map((airport) => (
-                          <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>
-                        ))}
-                      </select>
-                    )}
-                  </Field>
-                  <Field name="destination" label="Destination airport" error={errors.destination}>
-                    {(props) => (
-                      <select {...props} value={booking.destination} onChange={handleChange}>
-                        {destinationAirports.map((airport) => (
-                          <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>
-                        ))}
-                      </select>
-                    )}
-                  </Field>
-                </div>
-                <div className="field-grid two-col">
-                  <Field name="date" label="Pickup date" error={errors.date}>
-                    {(props) => (
-                      <input {...props} type="date" min={new Date().toISOString().slice(0, 10)} value={booking.date} onChange={handleChange} />
-                    )}
-                  </Field>
-                  <Field name="time" label="Pickup time" error={errors.time}>
-                    {(props) => (
-                      <input {...props} type="time" value={booking.time} onChange={handleChange} />
-                    )}
-                  </Field>
-                </div>
-              </>
-            )}
-
-            {steps.current === 2 && (
-              <>
-                <Field name="category" label="Vehicle category" error={errors.category}>
-                  {(props) => (
-                    <select {...props} value={booking.category} onChange={handleChange}>
-                      {fleet.map((item) => (
-                        <option key={item.id} value={item.category}>
-                          {item.category} — {item.description}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </Field>
-                <div className="field-grid two-col">
-                  <Field name="passengers" label="Passengers" error={errors.passengers}>
-                    {(props) => (
-                      <input {...props} type="number" min="1" max={selectedCategory?.seats || 8} value={booking.passengers} onChange={handleChange} />
-                    )}
-                  </Field>
-                  <Field name="luggage" label="Luggage" error={errors.luggage}>
-                    {(props) => (
-                      <input {...props} type="number" min="0" max={selectedCategory?.luggage || 8} value={booking.luggage} onChange={handleChange} />
-                    )}
-                  </Field>
-                </div>
-                <p className="booking-capacity">{selectedCategory?.description}. Up to {selectedCategory?.seats} passengers · {selectedCategory?.luggage} bags.</p>
-              </>
-            )}
-
-            {steps.current === 3 && (
-              <>
-                <div className="field-grid two-col">
-                  <Field name="name" label="Lead passenger" error={errors.name}>
-                    {(props) => (
-                      <input {...props} type="text" autoComplete="name" value={booking.name} onChange={handleChange} placeholder="Alex Morgan" />
-                    )}
-                  </Field>
-                  <Field name="phone" label="Mobile number" error={errors.phone}>
-                    {(props) => (
-                      <input {...props} type="tel" autoComplete="tel" value={booking.phone} onChange={handleChange} placeholder="+1 212 555 0100" />
-                    )}
-                  </Field>
-                </div>
-                <Field name="accountEmail" label="Account email">
-                  {(props) => (
-                    <input {...props} type="email" value={user?.email || ''} readOnly />
-                  )}
-                </Field>
-                {!user && <FormBanner message="Sign in before completing passenger details so the reservation is saved to your account." />}
-                <Field name="flightNumber" label="Flight number" optional error={errors.flightNumber}>
-                  {(props) => (
-                    <input {...props} type="text" value={booking.flightNumber} onChange={handleChange} placeholder="AA188" />
-                  )}
-                </Field>
-                <Field name="notes" label="Special requests" optional error={errors.notes}>
-                  {(props) => (
-                    <textarea {...props} rows="3" value={booking.notes} onChange={handleChange} placeholder="Child seat, additional stop, accessibility needs..." />
-                  )}
-                </Field>
-              </>
-            )}
-
-            {steps.current === 4 && (
-              <>
-                <div className="booking-review">
-                  <div><span>Route</span><strong>{booking.pickup} → {booking.destination}</strong></div>
-                  <div><span>Pickup</span><strong>{booking.date} at {booking.time}</strong></div>
-                  <div><span>Passenger</span><strong>{booking.name} · {booking.passengers} guests · {booking.luggage} bags</strong></div>
-                  <div><span>Vehicle</span><strong>{selectedCategory?.category}</strong></div>
-                  <div><span>Flight</span><strong>{booking.flightNumber || 'Not provided'}</strong></div>
-                  <div><span>Contact</span><strong>{user?.email} · {booking.phone}</strong></div>
-                </div>
-                <div className="quote-breakdown" aria-label="Fare breakdown">
-                  <div><span>Ride</span><strong>${Number(quote?.base || 0).toFixed(2)}</strong></div>
-                  <div><span>Service fee</span><strong>${Number(quote?.serviceFee || 0).toFixed(2)}</strong></div>
-                  {Number(quote?.airportSurcharge || 0) > 0 && <div><span>Airport surcharge</span><strong>${Number(quote.airportSurcharge).toFixed(2)}</strong></div>}
-                  <div className="quote-total"><span>Total</span><strong>${Number(quote?.total || 0).toFixed(2)}</strong></div>
-                </div>
-                <p className="booking-capacity">Your request will remain pending confirmation until our concierge team reviews it. No payment is taken at this step.</p>
-              </>
-            )}
-
-            <FormBanner message={errors.form} />
-            <div className="booking-actions">
-              {steps.current > 1 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    clearErrors();
-                    setSteps((current) => ({ ...current, current: current.current - 1 }));
-                  }}
-                >
-                  Back
-                </button>
-              )}
-              {steps.current < 4 ? (
-                <button type="button" className="btn btn-primary" disabled={isQuoting} onClick={handleContinue}>
-                  {isQuoting ? 'Preparing quote…' : 'Continue'}
-                </button>
-              ) : (
-                <button type="submit" className="btn btn-primary" disabled={isSubmitting || !user}>
-                  {isSubmitting ? 'Submitting…' : 'Request reservation'}
-                </button>
-              )}
-            </div>
-          </form>
-        ) : (
-          <div className="success-box">
-            <span className="eyebrow">Reservation received</span>
-            <h3>Thank you, {reservation?.customer_name || booking.name}.</h3>
-            <p className="panel-copy">Your request is awaiting concierge confirmation.</p>
-            <div className="booking-review">
-              <div><span>Reference</span><strong>{shortReference(reservation?.id)}</strong></div>
-              <div><span>Status</span><strong><span className={`status-pill status-${reservation?.status || 'pending_confirmation'}`}>{formatStatus(reservation?.status || 'pending_confirmation')}</span></strong></div>
-              <div><span>Route</span><strong>{reservation?.pickup} → {reservation?.destination}</strong></div>
-              <div><span>Pickup</span><strong>{reservation?.date} at {reservation?.time}</strong></div>
-              <div><span>Vehicle</span><strong>{reservation?.category}</strong></div>
-              <div><span>Quoted total</span><strong>${Number(reservation?.total || reservation?.quote_total || 0).toFixed(2)}</strong></div>
-            </div>
-            <div className="booking-actions">
-              <Link to="/dashboard" className="btn btn-primary">View dashboard</Link>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  setSubmitted(false);
-                  setReservation(null);
-                  setQuote(null);
-                  setBooking({ ...defaultBooking, date: tomorrowDate(), time: '18:00' });
-                  setSteps({ current: 1, total: 4 });
-                }}
-              >
-                Book another transfer
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <aside className="booking-side-panel">
-        <div className="side-card primary">
-          <span className="eyebrow light">Service details</span>
-          <h3>Professional airport chauffeur service</h3>
-          <ul>
-            <li>New Jersey airport pickups only</li>
-            <li>Approved destinations across NJ, NYC, and PA</li>
-            <li>Server-quoted pricing before you submit</li>
-          </ul>
-        </div>
-        <div className="side-card">
-          <span className="eyebrow">Fleet highlight</span>
-          <h3>{selectedCategory?.category}</h3>
-          <p>{selectedCategory?.description}</p>
-          <div className="mini-specs">
-            <span>{selectedCategory?.seats} passengers</span>
-            <span>{selectedCategory?.luggage} luggage</span>
-          </div>
-        </div>
-      </aside>
-    </main>
-  );
-}
-
 function ReservationCard({ reservation }) {
   return (
     <article className="reservation-card">
@@ -819,7 +367,8 @@ function ReservationCard({ reservation }) {
         <span className={`status-pill status-${reservation.status}`}>{formatStatus(reservation.status)}</span>
       </div>
       <div className="reservation-card-grid">
-        <div><span>Route</span><strong>{reservation.pickup} → {reservation.destination}</strong></div>
+        <div><span>Route</span><strong>{formatRoute(reservation)}</strong></div>
+        {reservation.transferType && <div><span>Journey</span><strong>{reservation.transferType === 'from_airport' ? 'From Airport' : 'To Airport'}</strong></div>}
         <div><span>Pickup</span><strong>{reservation.date} at {reservation.time}</strong></div>
         <div><span>Flight</span><strong>{reservation.flight_number || 'Not provided'}</strong></div>
         <div><span>Quoted total</span><strong>${Number(reservation.total || reservation.quote_total || 0).toFixed(2)}</strong></div>
@@ -1050,7 +599,7 @@ function AdminPage({ metrics, reservations, user, onAssignment, onMetricsRefresh
               {reservations.map((reservation) => (
                 <tr key={reservation.id}>
                   <td>{reservation.customer}</td>
-                  <td>{reservation.pickup} → {reservation.destination}</td>
+                  <td>{formatRoute(reservation)}</td>
                   <td>{reservation.category}</td>
                   <td><span className={`status-pill status-${reservation.status}`}>{reservation.status.replaceAll('_', ' ')}</span></td>
                   <td>
@@ -1577,7 +1126,7 @@ function PartnerPage({ user }) {
                 <thead><tr><th>Route</th><th>Pickup</th><th>Vehicle</th><th>Chauffeur</th><th>Status</th></tr></thead>
                 <tbody>{trips.map((trip) => (
                   <tr key={trip.id}>
-                    <td>{trip.pickup} → {trip.destination}</td>
+                    <td>{formatRoute(trip)}</td>
                     <td>{trip.date} at {trip.time}</td>
                     <td>{trip.category}</td>
                     <td>{trip.chauffeur_name}</td>
@@ -1841,7 +1390,7 @@ function ChauffeurPage({ user }) {
               <thead><tr><th>Route</th><th>Pickup</th><th>Vehicle</th><th>Flight</th><th>Status</th><th>Action</th></tr></thead>
               <tbody>{trips.map((trip) => (
                 <tr key={trip.id}>
-                  <td>{trip.pickup} → {trip.destination}</td>
+                  <td>{formatRoute(trip)}</td>
                   <td>{trip.date} at {trip.time}</td>
                   <td>{trip.category}</td>
                   <td>{trip.flight_number || '—'}</td>

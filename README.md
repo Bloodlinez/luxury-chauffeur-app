@@ -12,9 +12,9 @@ A luxury chauffeur booking application with a React/Vite client and an Express A
 - Server-generated reservation quotes; checkout amounts are read from the reservation
 - PostgreSQL schema and idempotent seed data in `server/migrations`
 
-Customers can complete a multi-step airport booking flow with server-generated quotes, future pickup validation, and a reservation-received confirmation that preserves pending status. The customer dashboard shows live upcoming and past reservations from PostgreSQL. Forms across login, booking, contact, partner onboarding, and fleet management use red inline field validation instead of browser alerts.
+Customers can complete a multi-step airport booking flow for From Airport and To Airport transfers, with street-address capture inside the NJ/NYC/PA service area, server-generated quotes, future pickup validation, and a reservation-received confirmation that preserves pending status. Passenger and luggage controls enforce whole-number vehicle capacity. The customer dashboard shows live upcoming and past reservations from PostgreSQL. Forms use red inline field validation, and select menus use a dark luxury theme.
 
-Partner onboarding is invitation-only: administrators issue expiring single-use tokens, invited companies create partner accounts, and admins approve, activate, or suspend partners. Active partners manage company profiles plus chauffeur and vehicle records for the three customer-facing categories (Business Class, First Class, Luxury SUV). Infiniti QX80 is rejected as a vehicle model. Partner and chauffeur trip portals use database-backed assignments and status transitions. Payment completion, notifications, flight monitoring, and production deployment are still incomplete. The application is not production-ready until those workflows and deployment checks are completed.
+Fleet cards use dark category placeholders until final photography is added at `public/fleet/{business-class,first-class,luxury-suv}.jpg`. Partner onboarding remains invitation-only. Infiniti QX80 is rejected as a vehicle model. Optional Mapbox address suggestions activate when `MAPBOX_TOKEN` is configured; addresses are still service-area validated and not treated as fully geocoded confirmation. Payment completion, notifications, flight monitoring, and production deployment remain incomplete.
 
 ## Local setup
 

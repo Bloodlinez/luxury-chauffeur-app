@@ -148,6 +148,7 @@ test('PostgreSQL migrations are tracked and safe to rerun', async () => {
     '003_reservation_chauffeur_assignment.sql',
     '004_reservation_traveler_details.sql',
     '005_partner_fleet_management.sql',
+    '006_airport_address_transfers.sql',
   ]);
 
   const airports = await databasePool.query('select count(*)::int as count from public.airports');
@@ -155,9 +156,18 @@ test('PostgreSQL migrations are tracked and safe to rerun', async () => {
 });
 
 test('PostgreSQL persists customer bookings and atomic chauffeur assignment', async () => {
+  const transferPayload = {
+    transferType: 'from_airport',
+    pickupAirport: 'EWR',
+    destinationAddressLine1: '30 Hudson Yards',
+    destinationCity: 'New York',
+    destinationState: 'NY',
+    destinationPostal: '10001',
+  };
+
   const quote = await request(app)
     .post('/api/quotes')
-    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class', passengers: 2, luggage: 2 });
+    .send({ ...transferPayload, vehicleId: 'first-class', passengers: 2, luggage: 2 });
   assert.equal(quote.status, 200);
 
   const pastPickup = await request(app)
@@ -165,8 +175,7 @@ test('PostgreSQL persists customer bookings and atomic chauffeur assignment', as
     .set('Cookie', customerCookie)
     .send({
       name: 'Database Passenger',
-      pickup: 'EWR',
-      destination: 'JFK',
+      ...transferPayload,
       date: '2020-01-01',
       time: '09:00',
       vehicleCategory: 'First Class',
@@ -182,8 +191,7 @@ test('PostgreSQL persists customer bookings and atomic chauffeur assignment', as
     .set('Cookie', customerCookie)
     .send({
       name: 'Database Passenger',
-      pickup: 'EWR',
-      destination: 'JFK',
+      ...transferPayload,
       date: '2026-12-29',
       time: '19:15',
       vehicleCategory: 'First Class',

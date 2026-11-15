@@ -4,13 +4,26 @@ import request from 'supertest';
 
 import { app } from '../index.js';
 
-test('forbidden route is rejected under launch geography policy', async () => {
+const fromAirportPayload = {
+  transferType: 'from_airport',
+  pickupAirport: 'EWR',
+  destinationAddressLine1: '1 World Trade Center',
+  destinationCity: 'New York',
+  destinationState: 'NY',
+  destinationPostal: '10007',
+};
+
+test('forbidden from-airport pickup outside New Jersey is rejected', async () => {
   const response = await request(app)
     .post('/api/reservations')
     .send({
       name: 'Blocked User',
-      pickup: 'JFK',
-      destination: 'LGA',
+      transferType: 'from_airport',
+      pickupAirport: 'JFK',
+      destinationAddressLine1: '500 Boardwalk',
+      destinationCity: 'Atlantic City',
+      destinationState: 'NJ',
+      destinationPostal: '08401',
       date: '2026-12-20',
       time: '18:00',
       phone: '+1-555-0199',
@@ -19,8 +32,7 @@ test('forbidden route is rejected under launch geography policy', async () => {
     });
 
   assert.equal(response.status, 400);
-  assert.match(String(response.body.message), /not available|launch policy/i);
-  assert.ok(response.body.errors.pickup || response.body.errors.destination);
+  assert.ok(response.body.errors.pickupAirport || response.body.errors.transferType);
 });
 
 test('auth and reservation validation return field-level errors', async () => {
@@ -56,23 +68,37 @@ test('partner invitation endpoints reject unauthenticated admin actions', async 
   assert.equal(partners.status, 401);
 });
 
-test('server quote validates route and returns authoritative pricing', async () => {
+test('server quote validates transfer capacity and returns authoritative pricing', async () => {
   const quote = await request(app)
     .post('/api/quotes')
-    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class' });
+    .send({ ...fromAirportPayload, vehicleId: 'first-class', passengers: 2, luggage: 2 });
   assert.equal(quote.status, 200);
   assert.equal(quote.body.category, 'First Class');
   assert.equal(quote.body.quote.total, 369.8);
 
   const forbidden = await request(app)
     .post('/api/quotes')
-    .send({ pickup: 'JFK', destination: 'LGA', vehicleId: 'first-class' });
+    .send({
+      transferType: 'from_airport',
+      pickupAirport: 'JFK',
+      destinationAddressLine1: '10 Main St',
+      destinationCity: 'Newark',
+      destinationState: 'NJ',
+      destinationPostal: '07102',
+      vehicleId: 'first-class',
+    });
   assert.equal(forbidden.status, 400);
 
   const overCapacity = await request(app)
     .post('/api/quotes')
-    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class', passengers: 5 });
+    .send({ ...fromAirportPayload, vehicleId: 'first-class', passengers: 5 });
   assert.equal(overCapacity.status, 400);
+  assert.ok(overCapacity.body.errors.passengers);
+
+  const decimalRejected = await request(app)
+    .post('/api/quotes')
+    .send({ ...fromAirportPayload, vehicleId: 'business-class', passengers: '2.5', luggage: 1 });
+  assert.equal(decimalRejected.status, 400);
 });
 
 test('secure registration and server-generated quote produce pending confirmation status', async () => {
@@ -94,24 +120,26 @@ test('secure registration and server-generated quote produce pending confirmatio
     .set('Cookie', sessionCookie)
     .send({
       name: 'Test Passenger',
-      pickup: 'EWR',
-      destination: 'JFK',
+      ...fromAirportPayload,
       date: '2026-12-21',
       time: '18:30',
       phone: '+1-555-0100',
       email: register.body.user.email,
       vehicleCategory: 'First Class',
+      passengers: 2,
+      luggage: 1,
       total: 1,
     });
 
   assert.equal(reservation.status, 201);
   assert.equal(reservation.body.reservation.status, 'pending_confirmation');
+  assert.equal(reservation.body.reservation.transferType, 'from_airport');
   assert.ok(reservation.body.quote.total > 0);
   assert.equal(reservation.body.reservation.total, reservation.body.quote.total);
   assert.ok(reservation.body.reservation.total > 1);
   const quote = await request(app)
     .post('/api/quotes')
-    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class' });
+    .send({ ...fromAirportPayload, vehicleId: 'first-class', passengers: 2, luggage: 1 });
   assert.equal(quote.body.quote.total, reservation.body.quote.total);
 
   const myReservations = await request(app)
@@ -121,5 +149,5 @@ test('secure registration and server-generated quote produce pending confirmatio
   assert.equal(myReservations.status, 200);
   assert.equal(myReservations.body.length, 1);
   assert.equal(myReservations.body[0].customer_id, register.body.user.id);
+  assert.match(String(myReservations.body[0].destination), /World Trade/i);
 });
-
