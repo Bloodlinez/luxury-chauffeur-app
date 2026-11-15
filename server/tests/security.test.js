@@ -27,6 +27,35 @@ test('admin data is not available without an authenticated admin session', async
   assert.equal(response.status, 401);
 });
 
+test('partner invitation endpoints reject unauthenticated admin actions', async () => {
+  const invite = await request(app)
+    .post('/api/admin/partners/invite')
+    .send({ companyName: 'Unauthorized Fleet', contactEmail: 'unauthorized@example.com' });
+  assert.equal(invite.status, 401);
+
+  const partners = await request(app).get('/api/admin/partners');
+  assert.equal(partners.status, 401);
+});
+
+test('server quote validates route and returns authoritative pricing', async () => {
+  const quote = await request(app)
+    .post('/api/quotes')
+    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class' });
+  assert.equal(quote.status, 200);
+  assert.equal(quote.body.category, 'First Class');
+  assert.equal(quote.body.quote.total, 369.8);
+
+  const forbidden = await request(app)
+    .post('/api/quotes')
+    .send({ pickup: 'JFK', destination: 'LGA', vehicleId: 'first-class' });
+  assert.equal(forbidden.status, 400);
+
+  const overCapacity = await request(app)
+    .post('/api/quotes')
+    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class', passengers: 5 });
+  assert.equal(overCapacity.status, 400);
+});
+
 test('secure registration and server-generated quote produce pending confirmation status', async () => {
   const register = await request(app)
     .post('/api/auth/register')
@@ -60,6 +89,10 @@ test('secure registration and server-generated quote produce pending confirmatio
   assert.ok(reservation.body.quote.total > 0);
   assert.equal(reservation.body.reservation.total, reservation.body.quote.total);
   assert.ok(reservation.body.reservation.total > 1);
+  const quote = await request(app)
+    .post('/api/quotes')
+    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class' });
+  assert.equal(quote.body.quote.total, reservation.body.quote.total);
 
   const myReservations = await request(app)
     .get('/api/my-reservations')

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, NavLink, Route, Routes, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
 
 const airportOptions = [
   { code: 'EWR', name: 'Newark Liberty International Airport', state: 'NJ' },
@@ -121,8 +121,9 @@ function App() {
         <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} user={user} onBookingSuccess={() => fetchReservations(user)} />} />
         <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={setAuthMode} authForm={authForm} setAuthForm={setAuthForm} onSubmit={handleAuthSubmit} />} />
         <Route path="/dashboard" element={<CustomerDashboardPage user={user} reservations={reservations} />} />
-        <Route path="/admin" element={<AdminPage metrics={metrics} reservations={reservations} user={user} onAssignment={async () => { await fetchReservations(user); await fetchMetrics(user); }} />} />
+        <Route path="/admin" element={<AdminPage metrics={metrics} reservations={reservations} user={user} onMetricsRefresh={() => fetchMetrics(user)} onAssignment={async () => { await fetchReservations(user); await fetchMetrics(user); }} />} />
         <Route path="/partner" element={<PartnerPage user={user} />} />
+        <Route path="/partner/join" element={<PartnerJoinPage onJoined={setUser} />} />
         <Route path="/chauffeur" element={<ChauffeurPage user={user} />} />
         <Route path="/contact" element={<ContactPage />} />
         <Route path="*" element={<NotFoundPage />} />
@@ -334,6 +335,9 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
   const [steps, setSteps] = useState({ current: 1, total: 4 });
   const [submitted, setSubmitted] = useState(false);
   const [reservation, setReservation] = useState(null);
+  const [quote, setQuote] = useState(null);
+  const [formError, setFormError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const selectedCategory = useMemo(
     () => fleet.find((item) => item.category === booking.category) || fleet[0],
@@ -350,6 +354,63 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
   const handleChange = (event) => {
     const { name, value } = event.target;
     setBooking((current) => ({ ...current, [name]: value }));
+    setQuote(null);
+  };
+
+  const handleContinue = async () => {
+    setFormError('');
+
+    if (steps.current === 1) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (!routeAllowed) {
+        setFormError('This route is not available under the current service policy.');
+        return;
+      }
+      if (!booking.date || booking.date < today || !booking.time) {
+        setFormError('Choose a future pickup date and time.');
+        return;
+      }
+      setSteps((current) => ({ ...current, current: 2 }));
+      return;
+    }
+
+    if (steps.current === 2) {
+      if (!selectedCategory) {
+        setFormError('Select a vehicle category to continue.');
+        return;
+      }
+      if (Number(booking.passengers) > selectedCategory.seats || Number(booking.luggage) > selectedCategory.luggage) {
+        setFormError(`${selectedCategory.category} accommodates up to ${selectedCategory.seats} passengers and ${selectedCategory.luggage} bags.`);
+        return;
+      }
+      setSteps((current) => ({ ...current, current: 3 }));
+      return;
+    }
+
+    if (!booking.name.trim() || !booking.phone.trim()) {
+      setFormError('Enter the lead passenger name and mobile number.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/quotes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pickup: booking.pickup,
+          destination: booking.destination,
+          vehicleId: selectedCategory.id,
+          passengers: booking.passengers,
+          luggage: booking.luggage,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to calculate a quote.');
+      setQuote(data.quote);
+      setSteps((current) => ({ ...current, current: 4 }));
+    } catch (error) {
+      setFormError(error.message);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -359,36 +420,38 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
       navigate('/login');
       return;
     }
-
-    if (!routeAllowed) {
-      alert('This airport route is not available under the current service policy.');
+    if (!quote) {
+      setFormError('Refresh the quote before submitting your request.');
       return;
     }
 
+    setIsSubmitting(true);
+    setFormError('');
     const payload = {
       ...booking,
       vehicleId: selectedCategory.id,
       category: selectedCategory.category,
-      name: booking.name || 'Guest Traveler',
     };
 
-    const response = await fetch('/api/reservations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(payload),
-    });
+    try {
+      const response = await fetch('/api/reservations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
 
-    const data = await response.json();
-    if (!response.ok) {
-      alert(data.message || 'Unable to submit reservation.');
-      return;
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to submit reservation.');
+
+      setReservation(data.reservation);
+      setSubmitted(true);
+      onBookingSuccess();
+    } catch (error) {
+      setFormError(error.message);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    setReservation(data.reservation);
-    setSubmitted(true);
-    setSteps({ current: 4, total: 4 });
-    onBookingSuccess();
   };
 
   return (
@@ -399,97 +462,105 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
           <h2>Luxury booking experience.</h2>
         </div>
 
-        <div className="booking-progress">
-          {[1, 2, 3, 4].map((step) => (
-            <div key={step} className={`progress-dot ${step <= steps.current ? 'active' : ''}`} />
-          ))}
+        <div className="booking-progress" aria-label="Reservation steps">
+          {['Route', 'Vehicle', 'Passenger', 'Review'].map((label, index) => {
+            const step = index + 1;
+            return (
+              <button
+                type="button"
+                key={label}
+                className={`booking-step ${steps.current === step ? 'active' : ''} ${steps.current > step ? 'complete' : ''}`}
+                disabled={step > steps.current}
+                onClick={() => setSteps((current) => ({ ...current, current: step }))}
+              >
+                <span>0{step}</span>{label}
+              </button>
+            );
+          })}
         </div>
 
         {!submitted ? (
           <form className="booking-form" onSubmit={handleSubmit}>
-            <div className="field-grid two-col">
-              <label>
-                Pickup airport
-                <select name="pickup" value={booking.pickup} onChange={handleChange}>
-                  {airports.map((airport) => (
-                    <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Destination airport
-                <select name="destination" value={booking.destination} onChange={handleChange}>
-                  {airports.map((airport) => (
-                    <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div className="field-grid two-col">
-              <label>
-                Pickup date
-                <input type="date" name="date" value={booking.date} onChange={handleChange} />
-              </label>
-              <label>
-                Pickup time
-                <input type="time" name="time" value={booking.time} onChange={handleChange} />
-              </label>
-            </div>
-
-            <div className="field-grid two-col">
-              <label>
-                Passenger name
-                <input type="text" name="name" value={booking.name} onChange={handleChange} placeholder="Alex Morgan" />
-              </label>
-              <label>
-                Flight number
-                <input type="text" name="flightNumber" value={booking.flightNumber} onChange={handleChange} placeholder="AA188" />
-              </label>
-            </div>
-
-            <div className="field-grid three-col">
-              <label>
-                Passengers
-                <input type="number" name="passengers" value={booking.passengers} min="1" max="8" onChange={handleChange} />
-              </label>
-              <label>
-                Luggage
-                <input type="number" name="luggage" value={booking.luggage} min="0" max="8" onChange={handleChange} />
-              </label>
-              <label>
-                Vehicle category
-                <select name="category" value={booking.category} onChange={handleChange}>
-                  {fleet.map((item) => (
-                    <option key={item.id} value={item.category}>{item.category}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <label>
-              Special requests
-              <textarea name="notes" value={booking.notes} onChange={handleChange} rows="4" placeholder="Quiet ride, child seat, extra water, meet and greet..." />
-            </label>
-
-            {!routeAllowed && (
-              <div className="alert-box">
-                This route is not available under the current launch policy. New Jersey airport pickups and approved airport destinations only.
-              </div>
+            {steps.current === 1 && (
+              <>
+                <div className="field-grid two-col">
+                  <label>
+                    Pickup airport
+                    <select name="pickup" value={booking.pickup} onChange={handleChange}>
+                      {airports.map((airport) => <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    Destination airport
+                    <select name="destination" value={booking.destination} onChange={handleChange}>
+                      {airports.map((airport) => <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="field-grid two-col">
+                  <label>Pickup date<input type="date" name="date" min={new Date().toISOString().slice(0, 10)} value={booking.date} onChange={handleChange} /></label>
+                  <label>Pickup time<input type="time" name="time" value={booking.time} onChange={handleChange} /></label>
+                </div>
+                {!routeAllowed && <div className="alert-box">Pickups must start at a New Jersey airport. Destinations must be in New Jersey, New York, or Pennsylvania.</div>}
+              </>
             )}
 
-            <div className="summary-box">
-              <div>
-                <span>Vehicle</span>
-                <strong>{selectedCategory?.category}</strong>
-              </div>
-              <div>
-                <span>Estimated</span>
-                <strong>${selectedCategory?.price}</strong>
-              </div>
-            </div>
+            {steps.current === 2 && (
+              <>
+                <label>
+                  Vehicle category
+                  <select name="category" value={booking.category} onChange={handleChange}>
+                    {fleet.map((item) => <option key={item.id} value={item.category}>{item.category} · up to {item.seats} passengers</option>)}
+                  </select>
+                </label>
+                <div className="field-grid two-col">
+                  <label>Passengers<input type="number" name="passengers" value={booking.passengers} min="1" max={selectedCategory?.seats || 8} onChange={handleChange} /></label>
+                  <label>Bags<input type="number" name="luggage" value={booking.luggage} min="0" max={selectedCategory?.luggage || 8} onChange={handleChange} /></label>
+                </div>
+                <p className="booking-capacity">{selectedCategory?.description}. {selectedCategory?.seats} seats · {selectedCategory?.luggage} bags.</p>
+              </>
+            )}
 
-            <button type="submit" className="btn btn-primary full-width">Confirm reservation</button>
+            {steps.current === 3 && (
+              <>
+                <div className="field-grid two-col">
+                  <label>Lead passenger<input type="text" name="name" autoComplete="name" value={booking.name} onChange={handleChange} placeholder="Alex Morgan" required /></label>
+                  <label>Mobile number<input type="tel" name="phone" autoComplete="tel" value={booking.phone} onChange={handleChange} placeholder="+1 212 555 0100" required /></label>
+                </div>
+                <label>Account email<input type="email" value={user?.email || ''} readOnly /></label>
+                <label>Flight number <span className="optional-label">Optional</span><input type="text" name="flightNumber" value={booking.flightNumber} onChange={handleChange} placeholder="AA188" /></label>
+                <label>Special requests <span className="optional-label">Optional</span><textarea name="notes" value={booking.notes} onChange={handleChange} rows="3" placeholder="Child seat, additional stop, accessibility needs..." /></label>
+              </>
+            )}
+
+            {steps.current === 4 && (
+              <>
+                <div className="booking-review">
+                  <div><span>Route</span><strong>{booking.pickup} → {booking.destination}</strong></div>
+                  <div><span>Pickup</span><strong>{booking.date} at {booking.time}</strong></div>
+                  <div><span>Passenger</span><strong>{booking.name} · {booking.passengers} guests · {booking.luggage} bags</strong></div>
+                  <div><span>Vehicle</span><strong>{selectedCategory?.category}</strong></div>
+                  <div><span>Contact</span><strong>{user?.email} · {booking.phone}</strong></div>
+                </div>
+                <div className="quote-breakdown" aria-label="Fare breakdown">
+                  <div><span>Ride</span><strong>${quote?.base.toFixed(2)}</strong></div>
+                  <div><span>Service fee</span><strong>${quote?.serviceFee.toFixed(2)}</strong></div>
+                  {quote?.airportSurcharge > 0 && <div><span>Airport surcharge</span><strong>${quote.airportSurcharge.toFixed(2)}</strong></div>}
+                  <div className="quote-total"><span>Total</span><strong>${quote?.total.toFixed(2)}</strong></div>
+                </div>
+                <p className="booking-capacity">Your request will be sent for confirmation. No payment is taken at this step.</p>
+              </>
+            )}
+
+            {formError && <div className="alert-box" role="alert">{formError}</div>}
+            <div className="booking-actions">
+              {steps.current > 1 && <button type="button" className="btn btn-secondary" onClick={() => { setFormError(''); setSteps((current) => ({ ...current, current: current.current - 1 })); }}>Back</button>}
+              {steps.current < 4 ? (
+                <button type="button" className="btn btn-primary" onClick={handleContinue}>Continue</button>
+              ) : (
+                <button type="submit" className="btn btn-primary" disabled={isSubmitting}>{isSubmitting ? 'Submitting…' : 'Request reservation'}</button>
+              )}
+            </div>
           </form>
         ) : (
           <div className="success-box">
@@ -497,7 +568,7 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
             <h3>{reservation?.category}</h3>
             <p>{reservation?.pickup} → {reservation?.destination}</p>
             <p>{reservation?.date} at {reservation?.time}</p>
-            <p>Pending confirmation</p>
+            <p className="status-pill status-pending_confirmation">Pending confirmation</p>
             <strong>${reservation?.total}</strong>
             <Link to="/dashboard" className="btn btn-primary">View dashboard</Link>
           </div>
@@ -571,24 +642,49 @@ function CustomerDashboardPage({ user, reservations }) {
   );
 }
 
-function AdminPage({ metrics, reservations, user, onAssignment }) {
+function AdminPage({ metrics, reservations, user, onAssignment, onMetricsRefresh }) {
   const [chauffeurs, setChauffeurs] = useState([]);
+  const [partners, setPartners] = useState([]);
+  const [vehicles, setVehicles] = useState([]);
+  const [invitations, setInvitations] = useState([]);
   const [selectedChauffeurs, setSelectedChauffeurs] = useState({});
   const [assignmentNotice, setAssignmentNotice] = useState('');
+  const [partnerNotice, setPartnerNotice] = useState('');
+  const [inviteForm, setInviteForm] = useState({ companyName: '', contactEmail: '' });
+  const [latestInviteLink, setLatestInviteLink] = useState('');
 
-  const refreshChauffeurs = async () => {
-    const response = await fetch('/api/admin/chauffeurs', { credentials: 'include' });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Unable to load chauffeur availability.');
-    setChauffeurs(data);
+  const refreshOperationalData = async () => {
+    const [chauffeurResponse, partnerResponse, vehicleResponse, invitationResponse] = await Promise.all([
+      fetch('/api/admin/chauffeurs', { credentials: 'include' }),
+      fetch('/api/admin/partners', { credentials: 'include' }),
+      fetch('/api/admin/vehicles', { credentials: 'include' }),
+      fetch('/api/admin/partner-invitations', { credentials: 'include' }),
+    ]);
+    const [chauffeurData, partnerData, vehicleData, invitationData] = await Promise.all([
+      chauffeurResponse.json(),
+      partnerResponse.json(),
+      vehicleResponse.json(),
+      invitationResponse.json(),
+    ]);
+    if (!chauffeurResponse.ok) throw new Error(chauffeurData.message || 'Unable to load chauffeurs.');
+    if (!partnerResponse.ok) throw new Error(partnerData.message || 'Unable to load partners.');
+    if (!vehicleResponse.ok) throw new Error(vehicleData.message || 'Unable to load vehicles.');
+    if (!invitationResponse.ok) throw new Error(invitationData.message || 'Unable to load invitations.');
+    setChauffeurs(chauffeurData);
+    setPartners(partnerData);
+    setVehicles(vehicleData);
+    setInvitations(invitationData);
   };
 
   useEffect(() => {
     if (user?.role !== 'admin') {
       setChauffeurs([]);
+      setPartners([]);
+      setVehicles([]);
+      setInvitations([]);
       return;
     }
-    refreshChauffeurs().catch((error) => setAssignmentNotice(error.message));
+    refreshOperationalData().catch((error) => setPartnerNotice(error.message));
   }, [user]);
 
   const assignChauffeur = async (reservationId) => {
@@ -605,7 +701,42 @@ function AdminPage({ metrics, reservations, user, onAssignment }) {
     setAssignmentNotice(response.ok ? data.message : data.message || 'Assignment failed.');
     if (response.ok) {
       setSelectedChauffeurs((current) => ({ ...current, [reservationId]: '' }));
-      await Promise.all([onAssignment(), refreshChauffeurs()]);
+      await Promise.all([onAssignment(), refreshOperationalData()]);
+    }
+  };
+
+  const invitePartner = async (event) => {
+    event.preventDefault();
+    setPartnerNotice('');
+    setLatestInviteLink('');
+    const response = await fetch('/api/admin/partners/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(inviteForm),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setPartnerNotice(data.message || 'Unable to create invitation.');
+      return;
+    }
+    setPartnerNotice(data.message);
+    setLatestInviteLink(data.invitation?.invitePath || '');
+    setInviteForm({ companyName: '', contactEmail: '' });
+    await Promise.all([refreshOperationalData(), onMetricsRefresh?.()]);
+  };
+
+  const updatePartnerStatus = async (partnerId, status) => {
+    const response = await fetch(`/api/admin/partners/${partnerId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json();
+    setPartnerNotice(response.ok ? data.message : data.message || 'Unable to update partner.');
+    if (response.ok) {
+      await Promise.all([refreshOperationalData(), onMetricsRefresh?.()]);
     }
   };
 
@@ -625,13 +756,16 @@ function AdminPage({ metrics, reservations, user, onAssignment }) {
     <main className="page-shell admin-shell">
       <div className="section-head left">
         <span className="eyebrow">Operations dashboard</span>
-        <h2>Dispatch and reservation control.</h2>
+        <h2>Dispatch, partners, and fleet control.</h2>
       </div>
 
-      <div className="stats-grid">
-        <div className="stat-card"><span>Today</span><strong>{metrics?.reservationsToday || 0}</strong></div>
+      <div className="stats-grid admin-stats-grid">
+        <div className="stat-card"><span>Reservations</span><strong>{metrics?.reservationsToday || 0}</strong></div>
         <div className="stat-card"><span>Active trips</span><strong>{metrics?.activeTrips || 0}</strong></div>
-        <div className="stat-card"><span>Pending</span><strong>{metrics?.pendingApprovals || 0}</strong></div>
+        <div className="stat-card"><span>Pending rides</span><strong>{metrics?.pendingApprovals || 0}</strong></div>
+        <div className="stat-card"><span>Available vehicles</span><strong>{metrics?.availableVehicles || 0}</strong></div>
+        <div className="stat-card"><span>Active partners</span><strong>{metrics?.activePartners || 0}</strong></div>
+        <div className="stat-card"><span>Pending partners</span><strong>{metrics?.pendingPartners || 0}</strong></div>
         <div className="stat-card"><span>Revenue</span><strong>${metrics?.revenue || 0}</strong></div>
       </div>
 
@@ -654,7 +788,7 @@ function AdminPage({ metrics, reservations, user, onAssignment }) {
                   <td>{reservation.customer}</td>
                   <td>{reservation.pickup} → {reservation.destination}</td>
                   <td>{reservation.category}</td>
-                  <td><span className="status-pill">{reservation.status}</span></td>
+                  <td><span className={`status-pill status-${reservation.status}`}>{reservation.status.replaceAll('_', ' ')}</span></td>
                   <td>
                     {reservation.chauffeur_name ? (
                       <span>{reservation.chauffeur_name}</span>
@@ -667,7 +801,9 @@ function AdminPage({ metrics, reservations, user, onAssignment }) {
                         >
                           <option value="">Select chauffeur</option>
                           {chauffeurs.filter((chauffeur) => chauffeur.status === 'available').map((chauffeur) => (
-                            <option key={chauffeur.id} value={chauffeur.id}>{chauffeur.full_name}</option>
+                            <option key={chauffeur.id} value={chauffeur.id}>
+                              {chauffeur.full_name}{chauffeur.partner_name ? ` · ${chauffeur.partner_name}` : ''}
+                            </option>
                           ))}
                         </select>
                         <button
@@ -688,63 +824,517 @@ function AdminPage({ metrics, reservations, user, onAssignment }) {
         </div>
         {assignmentNotice && <p role="status">{assignmentNotice}</p>}
       </div>
+
+      <div className="ops-grid">
+        <div className="card-panel big-panel">
+          <h3>Invite transportation partner</h3>
+          <p className="panel-copy">Invitations are admin-only, single-use, and expire after seven days. There is no public partner registration.</p>
+          <form className="ops-form" onSubmit={invitePartner}>
+            <label>Company name
+              <input
+                type="text"
+                value={inviteForm.companyName}
+                onChange={(event) => setInviteForm((current) => ({ ...current, companyName: event.target.value }))}
+                required
+              />
+            </label>
+            <label>Contact email
+              <input
+                type="email"
+                value={inviteForm.contactEmail}
+                onChange={(event) => setInviteForm((current) => ({ ...current, contactEmail: event.target.value }))}
+                required
+              />
+            </label>
+            <button type="submit" className="btn btn-primary">Create invitation</button>
+          </form>
+          {latestInviteLink && (
+            <p className="invite-link" role="status">
+              Share this secure link: <code>{latestInviteLink}</code>
+            </p>
+          )}
+          {partnerNotice && <p role="status">{partnerNotice}</p>}
+        </div>
+
+        <div className="card-panel big-panel">
+          <h3>Recent invitations</h3>
+          {invitations.length === 0 ? <p>No invitations have been issued.</p> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Company</th><th>Email</th><th>Status</th><th>Expires</th></tr></thead>
+                <tbody>
+                  {invitations.slice(0, 8).map((invitation) => (
+                    <tr key={invitation.id}>
+                      <td>{invitation.companyName}</td>
+                      <td>{invitation.contactEmail}</td>
+                      <td><span className={`status-pill status-${invitation.status}`}>{invitation.status}</span></td>
+                      <td>{new Date(invitation.expiresAt).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="card-panel big-panel">
+        <h3>Partner roster</h3>
+        {partners.length === 0 ? <p>No partners are on record yet.</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Company</th>
+                  <th>Contact</th>
+                  <th>Status</th>
+                  <th>Fleet</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {partners.map((partner) => (
+                  <tr key={partner.id}>
+                    <td>{partner.companyName}</td>
+                    <td>{partner.ownerEmail || partner.contactEmail || '—'}</td>
+                    <td><span className={`status-pill status-${partner.status}`}>{partner.status}</span></td>
+                    <td>{partner.chauffeurCount} chauffeurs · {partner.vehicleCount} vehicles</td>
+                    <td>
+                      <div className="action-row">
+                        {partner.status !== 'active' && (
+                          <button type="button" className="btn btn-secondary small" onClick={() => updatePartnerStatus(partner.id, 'active')}>Activate</button>
+                        )}
+                        {partner.status === 'invited' && (
+                          <button type="button" className="btn btn-secondary small" onClick={() => updatePartnerStatus(partner.id, 'approved')}>Mark approved</button>
+                        )}
+                        {partner.status !== 'suspended' && (
+                          <button type="button" className="btn btn-secondary small" onClick={() => updatePartnerStatus(partner.id, 'suspended')}>Suspend</button>
+                        )}
+                        {partner.status === 'suspended' && (
+                          <button type="button" className="btn btn-secondary small" onClick={() => updatePartnerStatus(partner.id, 'approved')}>Reinstate</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card-panel big-panel">
+        <h3>Network fleet inventory</h3>
+        {vehicles.length === 0 ? <p>No partner vehicles have been registered.</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Partner</th>
+                  <th>Category</th>
+                  <th>Vehicle</th>
+                  <th>Plate</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vehicles.map((vehicle) => (
+                  <tr key={vehicle.id}>
+                    <td>{vehicle.partnerName}</td>
+                    <td>{vehicle.category}</td>
+                    <td>{vehicle.makeModel}{vehicle.year ? ` · ${vehicle.year}` : ''}</td>
+                    <td>{vehicle.licensePlate}</td>
+                    <td><span className={`status-pill status-${vehicle.status}`}>{vehicle.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function PartnerJoinPage({ onJoined }) {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get('token') || '';
+  const [invitation, setInvitation] = useState(null);
+  const [form, setForm] = useState({ name: '', password: '' });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(Boolean(token));
+
+  useEffect(() => {
+    if (!token) {
+      setError('Invitation token is missing.');
+      setLoading(false);
+      return;
+    }
+    fetch(`/api/partner/invitations/${token}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Invitation is not valid.');
+        setInvitation(data.invitation);
+        setLoading(false);
+      })
+      .catch((requestError) => {
+        setError(requestError.message);
+        setLoading(false);
+      });
+  }, [token]);
+
+  const acceptInvitation = async (event) => {
+    event.preventDefault();
+    setError('');
+    const response = await fetch('/api/partner/accept-invitation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ token, name: form.name, password: form.password }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data.message || 'Unable to create partner account.');
+      return;
+    }
+    onJoined(data.user);
+    navigate('/partner');
+  };
+
+  return (
+    <main className="page-shell auth-shell">
+      <div className="card-panel auth-card">
+        <span className="eyebrow">Partner invitation</span>
+        <h2>Create your transportation company account.</h2>
+        {loading && <p>Validating invitation…</p>}
+        {error && <p role="alert">{error}</p>}
+        {!loading && invitation && (
+          <>
+            <p className="panel-copy">
+              You are joining <strong>{invitation.companyName}</strong> with {invitation.contactEmail}.
+              Public partner registration is not available.
+            </p>
+            <form className="auth-form" onSubmit={acceptInvitation}>
+              <label>Your name
+                <input type="text" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+              </label>
+              <label>Password
+                <input type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} minLength={8} required />
+              </label>
+              <button type="submit" className="btn btn-primary">Activate partner account</button>
+            </form>
+          </>
+        )}
+      </div>
     </main>
   );
 }
 
 function PartnerPage({ user }) {
+  const [profile, setProfile] = useState(null);
   const [trips, setTrips] = useState([]);
+  const [chauffeurs, setChauffeurs] = useState([]);
+  const [vehicles, setVehicles] = useState([]);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [profileForm, setProfileForm] = useState({ companyName: '', phone: '', address: '', notes: '' });
+  const [chauffeurForm, setChauffeurForm] = useState({ fullName: '', email: '', phone: '', password: '' });
+  const [vehicleForm, setVehicleForm] = useState({
+    categorySlug: 'business-class',
+    makeModel: 'Mercedes E-Class',
+    licensePlate: '',
+    color: '',
+    year: '',
+    seats: 4,
+    luggage: 3,
+  });
+
+  const categoryDefaults = {
+    'business-class': { makeModel: 'Mercedes E-Class', seats: 4, luggage: 3 },
+    'first-class': { makeModel: 'Mercedes S-Class', seats: 4, luggage: 3 },
+    'luxury-suv': { makeModel: 'Cadillac Escalade', seats: 6, luggage: 5 },
+  };
+
+  const refreshPartnerData = async () => {
+    const [profileResponse, tripsResponse, chauffeurResponse, vehicleResponse] = await Promise.all([
+      fetch('/api/partner/profile', { credentials: 'include' }),
+      fetch('/api/partner/trips', { credentials: 'include' }),
+      fetch('/api/partner/chauffeurs', { credentials: 'include' }),
+      fetch('/api/partner/vehicles', { credentials: 'include' }),
+    ]);
+    const [profileData, tripsData, chauffeurData, vehicleData] = await Promise.all([
+      profileResponse.json(),
+      tripsResponse.json(),
+      chauffeurResponse.json(),
+      vehicleResponse.json(),
+    ]);
+    if (!profileResponse.ok) throw new Error(profileData.message || 'Unable to load partner profile.');
+    if (!tripsResponse.ok) throw new Error(tripsData.message || 'Unable to load partner trips.');
+    if (!chauffeurResponse.ok) throw new Error(chauffeurData.message || 'Unable to load chauffeurs.');
+    if (!vehicleResponse.ok) throw new Error(vehicleData.message || 'Unable to load vehicles.');
+    setProfile(profileData.partner);
+    setProfileForm({
+      companyName: profileData.partner.companyName || '',
+      phone: profileData.partner.phone || '',
+      address: profileData.partner.address || '',
+      notes: profileData.partner.notes || '',
+    });
+    setTrips(tripsData);
+    setChauffeurs(chauffeurData);
+    setVehicles(vehicleData);
+  };
 
   useEffect(() => {
     if (user?.role !== 'partner') return;
-    fetch('/api/partner/trips', { credentials: 'include' })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Unable to load partner trips.');
-        return data;
-      })
-      .then(setTrips)
-      .catch((requestError) => setError(requestError.message));
+    refreshPartnerData().catch((requestError) => setError(requestError.message));
   }, [user]);
+
+  const saveProfile = async (event) => {
+    event.preventDefault();
+    const response = await fetch('/api/partner/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(profileForm),
+    });
+    const data = await response.json();
+    setNotice(response.ok ? data.message : data.message || 'Unable to update profile.');
+    if (response.ok) setProfile(data.partner);
+  };
+
+  const addChauffeur = async (event) => {
+    event.preventDefault();
+    const response = await fetch('/api/partner/chauffeurs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(chauffeurForm),
+    });
+    const data = await response.json();
+    setNotice(response.ok ? data.message : data.message || 'Unable to add chauffeur.');
+    if (response.ok) {
+      setChauffeurForm({ fullName: '', email: '', phone: '', password: '' });
+      await refreshPartnerData();
+    }
+  };
+
+  const updateChauffeurStatus = async (chauffeurId, status) => {
+    const response = await fetch(`/api/partner/chauffeurs/${chauffeurId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json();
+    setNotice(response.ok ? data.message : data.message || 'Unable to update chauffeur.');
+    if (response.ok) await refreshPartnerData();
+  };
+
+  const addVehicle = async (event) => {
+    event.preventDefault();
+    const response = await fetch('/api/partner/vehicles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(vehicleForm),
+    });
+    const data = await response.json();
+    setNotice(response.ok ? data.message : data.message || 'Unable to add vehicle.');
+    if (response.ok) {
+      const defaults = categoryDefaults[vehicleForm.categorySlug];
+      setVehicleForm({
+        categorySlug: vehicleForm.categorySlug,
+        makeModel: defaults.makeModel,
+        licensePlate: '',
+        color: '',
+        year: '',
+        seats: defaults.seats,
+        luggage: defaults.luggage,
+      });
+      await refreshPartnerData();
+    }
+  };
+
+  const updateVehicleStatus = async (vehicleId, status) => {
+    const response = await fetch(`/api/partner/vehicles/${vehicleId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json();
+    setNotice(response.ok ? data.message : data.message || 'Unable to update vehicle.');
+    if (response.ok) await refreshPartnerData();
+  };
 
   if (user?.role !== 'partner') {
     return (
       <main className="page-shell small-shell">
         <div className="card-panel">
           <h2>Partner access required</h2>
-          <p>Sign in with an approved partner account to view assigned operations.</p>
+          <p>Sign in with an invited partner account. Public partner registration is not available.</p>
           <Link to="/login" className="btn btn-primary">Sign in</Link>
         </div>
       </main>
     );
   }
 
+  const canManageFleet = profile?.status === 'active';
+
   return (
-    <main className="page-shell small-shell">
+    <main className="page-shell admin-shell">
       <div className="section-head left">
         <span className="eyebrow">Partner portal</span>
-        <h2>Partner trip operations.</h2>
+        <h2>{profile?.companyName || 'Partner operations'}.</h2>
+        {profile && <p className="panel-copy">Account status: <span className={`status-pill status-${profile.status}`}>{profile.status}</span></p>}
       </div>
-      <div className="card-panel big-panel">
-        <h3>Assigned trips</h3>
-        {error && <p role="alert">{error}</p>}
-        {trips.length === 0 ? <p>No trips have been assigned to your fleet.</p> : (
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Route</th><th>Pickup</th><th>Vehicle</th><th>Chauffeur</th><th>Status</th></tr></thead>
-              <tbody>{trips.map((trip) => (
-                <tr key={trip.id}>
-                  <td>{trip.pickup} → {trip.destination}</td>
-                  <td>{trip.date} at {trip.time}</td>
-                  <td>{trip.category}</td>
-                  <td>{trip.chauffeur_name}</td>
-                  <td><span className="status-pill">{trip.status.replaceAll('_', ' ')}</span></td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
-        )}
+
+      {error && <p role="alert">{error}</p>}
+      {notice && <p role="status">{notice}</p>}
+      {profile && profile.status === 'approved' && (
+        <p className="panel-copy">Your account is approved. An administrator must activate the company before chauffeurs and vehicles can be managed.</p>
+      )}
+
+      <div className="ops-grid">
+        <div className="card-panel big-panel">
+          <h3>Company profile</h3>
+          <form className="ops-form" onSubmit={saveProfile}>
+            <label>Company name<input type="text" value={profileForm.companyName} onChange={(event) => setProfileForm((current) => ({ ...current, companyName: event.target.value }))} required /></label>
+            <label>Phone<input type="tel" value={profileForm.phone} onChange={(event) => setProfileForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+            <label>Address<input type="text" value={profileForm.address} onChange={(event) => setProfileForm((current) => ({ ...current, address: event.target.value }))} /></label>
+            <label>Operations notes<textarea rows="3" value={profileForm.notes} onChange={(event) => setProfileForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            <button type="submit" className="btn btn-primary">Save profile</button>
+          </form>
+        </div>
+
+        <div className="card-panel big-panel">
+          <h3>Assigned trips</h3>
+          {trips.length === 0 ? <p>No trips have been assigned to your fleet.</p> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Route</th><th>Pickup</th><th>Vehicle</th><th>Chauffeur</th><th>Status</th></tr></thead>
+                <tbody>{trips.map((trip) => (
+                  <tr key={trip.id}>
+                    <td>{trip.pickup} → {trip.destination}</td>
+                    <td>{trip.date} at {trip.time}</td>
+                    <td>{trip.category}</td>
+                    <td>{trip.chauffeur_name}</td>
+                    <td><span className={`status-pill status-${trip.status}`}>{trip.status.replaceAll('_', ' ')}</span></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="ops-grid">
+        <div className="card-panel big-panel">
+          <h3>Chauffeur roster</h3>
+          {canManageFleet ? (
+            <form className="ops-form" onSubmit={addChauffeur}>
+              <label>Full name<input type="text" value={chauffeurForm.fullName} onChange={(event) => setChauffeurForm((current) => ({ ...current, fullName: event.target.value }))} required /></label>
+              <label>Email<input type="email" value={chauffeurForm.email} onChange={(event) => setChauffeurForm((current) => ({ ...current, email: event.target.value }))} required /></label>
+              <label>Phone<input type="tel" value={chauffeurForm.phone} onChange={(event) => setChauffeurForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+              <label>Temporary password<input type="password" value={chauffeurForm.password} onChange={(event) => setChauffeurForm((current) => ({ ...current, password: event.target.value }))} minLength={8} required /></label>
+              <button type="submit" className="btn btn-primary">Add chauffeur</button>
+            </form>
+          ) : <p className="panel-copy">Fleet management unlocks after administrator activation.</p>}
+          {chauffeurs.length === 0 ? <p>No chauffeurs on your roster yet.</p> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Action</th></tr></thead>
+                <tbody>
+                  {chauffeurs.map((chauffeur) => (
+                    <tr key={chauffeur.id}>
+                      <td>{chauffeur.fullName}</td>
+                      <td>{chauffeur.email || '—'}</td>
+                      <td><span className={`status-pill status-${chauffeur.status}`}>{chauffeur.status}</span></td>
+                      <td>
+                        {canManageFleet && chauffeur.status !== 'assigned' && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary small"
+                            onClick={() => updateChauffeurStatus(chauffeur.id, chauffeur.status === 'offline' ? 'available' : 'offline')}
+                          >
+                            {chauffeur.status === 'offline' ? 'Set available' : 'Set offline'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="card-panel big-panel">
+          <h3>Vehicle fleet</h3>
+          <p className="panel-copy">Only Business Class, First Class, and Luxury SUV are supported. Infiniti QX80 is not offered.</p>
+          {canManageFleet ? (
+            <form className="ops-form" onSubmit={addVehicle}>
+              <label>Category
+                <select
+                  value={vehicleForm.categorySlug}
+                  onChange={(event) => {
+                    const categorySlug = event.target.value;
+                    const defaults = categoryDefaults[categorySlug];
+                    setVehicleForm((current) => ({
+                      ...current,
+                      categorySlug,
+                      makeModel: defaults.makeModel,
+                      seats: defaults.seats,
+                      luggage: defaults.luggage,
+                    }));
+                  }}
+                >
+                  <option value="business-class">Business Class — Mercedes E-Class or Similar</option>
+                  <option value="first-class">First Class — Mercedes S-Class or Similar</option>
+                  <option value="luxury-suv">Luxury SUV — Cadillac Escalade or Similar</option>
+                </select>
+              </label>
+              <label>Make / model<input type="text" value={vehicleForm.makeModel} onChange={(event) => setVehicleForm((current) => ({ ...current, makeModel: event.target.value }))} required /></label>
+              <label>License plate<input type="text" value={vehicleForm.licensePlate} onChange={(event) => setVehicleForm((current) => ({ ...current, licensePlate: event.target.value }))} required /></label>
+              <label>Color<input type="text" value={vehicleForm.color} onChange={(event) => setVehicleForm((current) => ({ ...current, color: event.target.value }))} /></label>
+              <label>Year<input type="number" min="2000" max="2100" value={vehicleForm.year} onChange={(event) => setVehicleForm((current) => ({ ...current, year: event.target.value }))} /></label>
+              <button type="submit" className="btn btn-primary">Add vehicle</button>
+            </form>
+          ) : <p className="panel-copy">Vehicle registration unlocks after administrator activation.</p>}
+          {vehicles.length === 0 ? <p>No vehicles registered for your company.</p> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Category</th><th>Vehicle</th><th>Plate</th><th>Status</th><th>Action</th></tr></thead>
+                <tbody>
+                  {vehicles.map((vehicle) => (
+                    <tr key={vehicle.id}>
+                      <td>{vehicle.category}</td>
+                      <td>{vehicle.makeModel}</td>
+                      <td>{vehicle.licensePlate}</td>
+                      <td><span className={`status-pill status-${vehicle.status}`}>{vehicle.status}</span></td>
+                      <td>
+                        {canManageFleet && (
+                          <div className="action-row">
+                            {vehicle.status !== 'available' && (
+                              <button type="button" className="btn btn-secondary small" onClick={() => updateVehicleStatus(vehicle.id, 'available')}>Available</button>
+                            )}
+                            {vehicle.status !== 'maintenance' && (
+                              <button type="button" className="btn btn-secondary small" onClick={() => updateVehicleStatus(vehicle.id, 'maintenance')}>Maintenance</button>
+                            )}
+                            {vehicle.status !== 'inactive' && (
+                              <button type="button" className="btn btn-secondary small" onClick={() => updateVehicleStatus(vehicle.id, 'inactive')}>Inactive</button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );
@@ -813,7 +1403,7 @@ function ChauffeurPage({ user }) {
                   <td>{trip.date} at {trip.time}</td>
                   <td>{trip.category}</td>
                   <td>{trip.flight_number || '—'}</td>
-                  <td><span className="status-pill">{trip.status.replaceAll('_', ' ')}</span></td>
+                  <td><span className={`status-pill status-${trip.status}`}>{trip.status.replaceAll('_', ' ')}</span></td>
                   <td>
                     {trip.status === 'assigned' && <button type="button" className="btn btn-primary small" onClick={() => updateTripStatus(trip, 'in_transit')}>Start trip</button>}
                     {trip.status === 'in_transit' && <button type="button" className="btn btn-secondary small" onClick={() => updateTripStatus(trip, 'completed')}>Complete</button>}

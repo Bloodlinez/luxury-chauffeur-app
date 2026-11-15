@@ -5,7 +5,7 @@ import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -44,13 +44,39 @@ const airportCatalog = [
   { code: 'PIT', name: 'Pittsburgh International Airport', state: 'PA', city: 'Pittsburgh', region: 'Pennsylvania', active: true },
 ];
 
+const ALLOWED_FLEET_CATEGORIES = {
+  'business-class': {
+    category: 'Business Class',
+    description: 'Mercedes E-Class or Similar',
+    defaultMakeModel: 'Mercedes E-Class',
+    seats: 4,
+    luggage: 3,
+  },
+  'first-class': {
+    category: 'First Class',
+    description: 'Mercedes S-Class or Similar',
+    defaultMakeModel: 'Mercedes S-Class',
+    seats: 4,
+    luggage: 3,
+  },
+  'luxury-suv': {
+    category: 'Luxury SUV',
+    description: 'Cadillac Escalade or Similar',
+    defaultMakeModel: 'Cadillac Escalade',
+    seats: 6,
+    luggage: 5,
+  },
+};
+
+const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 const fleetCatalog = [
   {
     id: 'business-class',
     category: 'Business Class',
     name: 'Business Class',
-    description: 'Mercedes-Benz E-Class or Similar',
-    vehicles: ['Mercedes-Benz E-Class', 'BMW 5 Series', 'Audi A6'],
+    description: 'Mercedes E-Class or Similar',
+    vehicles: ['Mercedes E-Class', 'BMW 5 Series', 'Audi A6'],
     seats: 4,
     luggage: 3,
     amenities: ['Professional chauffeur', 'Climate control', 'Charging', 'Bottled water'],
@@ -62,8 +88,8 @@ const fleetCatalog = [
     id: 'first-class',
     category: 'First Class',
     name: 'First Class',
-    description: 'Mercedes-Benz S-Class or Similar',
-    vehicles: ['Mercedes-Benz S-Class', 'BMW 7 Series', 'Audi A8 L'],
+    description: 'Mercedes S-Class or Similar',
+    vehicles: ['Mercedes S-Class', 'BMW 7 Series', 'Audi A8 L'],
     seats: 4,
     luggage: 3,
     amenities: ['Executive leather seating', 'Quiet cabin', 'Complimentary refreshments', 'Privacy glass'],
@@ -289,6 +315,18 @@ function getPaymentQuote(category, payload) {
   };
 }
 
+function getRideCounts(payload, category) {
+  const passengers = Number(payload.passengers ?? 1);
+  const luggage = Number(payload.luggage ?? 0);
+  if (!Number.isInteger(passengers) || passengers < 1 || passengers > category.seats) {
+    return { error: `This vehicle accommodates 1 to ${category.seats} passengers.` };
+  }
+  if (!Number.isInteger(luggage) || luggage < 0 || luggage > category.luggage) {
+    return { error: `This vehicle accommodates up to ${category.luggage} bags.` };
+  }
+  return { passengers, luggage };
+}
+
 async function authenticateRequest(req) {
   const header = req.headers.authorization || '';
   const cookieToken = (req.headers.cookie || '')
@@ -325,6 +363,114 @@ function requireRole(role) {
       return res.status(403).json({ message: 'You are not authorized to access this resource.' });
     }
     next();
+  };
+}
+
+function hashInvitationToken(token) {
+  return createHash('sha256').update(String(token)).digest('hex');
+}
+
+function createInvitationToken() {
+  return randomBytes(32).toString('hex');
+}
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function resolveCategorySlug(input) {
+  const value = String(input || '').trim().toLowerCase();
+  if (ALLOWED_FLEET_CATEGORIES[value]) return value;
+  const byName = Object.entries(ALLOWED_FLEET_CATEGORIES).find(([, meta]) => meta.category.toLowerCase() === value);
+  return byName ? byName[0] : null;
+}
+
+async function findPartnerByOwner(userId, client = pool) {
+  if (!client) return null;
+  const result = await client.query(
+    `select id, owner_user_id, company_name, contact_email, phone, address, notes, status, created_at, updated_at
+     from public.partners
+     where owner_user_id = $1`,
+    [userId],
+  );
+  return result.rows[0] || null;
+}
+
+async function requireActivePartner(req, res, next) {
+  if (!pool) return res.status(503).json({ message: 'Partner operations require PostgreSQL.' });
+  const partner = await findPartnerByOwner(req.user.sub);
+  if (!partner) return res.status(404).json({ message: 'Partner profile not found.' });
+  if (partner.status === 'suspended') {
+    return res.status(403).json({ message: 'This partner account is suspended.' });
+  }
+  if (!['approved', 'active'].includes(partner.status)) {
+    return res.status(403).json({ message: 'Partner account is awaiting administrator approval.' });
+  }
+  req.partner = partner;
+  next();
+}
+
+function serializePartner(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    companyName: row.company_name,
+    contactEmail: row.contact_email,
+    phone: row.phone,
+    address: row.address,
+    notes: row.notes,
+    status: row.status,
+    ownerName: row.owner_name || null,
+    ownerEmail: row.owner_email || null,
+    chauffeurCount: Number(row.chauffeur_count || 0),
+    vehicleCount: Number(row.vehicle_count || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function serializeVehicle(row) {
+  const meta = ALLOWED_FLEET_CATEGORIES[row.category_slug] || {};
+  return {
+    id: row.id,
+    partnerId: row.partner_id,
+    categorySlug: row.category_slug,
+    category: meta.category || row.category_slug,
+    makeModel: row.make_model,
+    licensePlate: row.license_plate,
+    color: row.color,
+    year: row.year,
+    seats: Number(row.seats),
+    luggage: Number(row.luggage),
+    status: row.status,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function serializeInvitation(row, { includeToken = false, token = null } = {}) {
+  return {
+    id: row.id,
+    companyName: row.company_name,
+    contactEmail: row.contact_email,
+    expiresAt: row.expires_at,
+    usedAt: row.used_at,
+    revokedAt: row.revoked_at,
+    partnerId: row.partner_id,
+    createdAt: row.created_at,
+    status: row.revoked_at
+      ? 'revoked'
+      : row.used_at
+        ? 'accepted'
+        : new Date(row.expires_at) < new Date()
+          ? 'expired'
+          : 'pending',
+    ...(includeToken && token ? { token, invitePath: `/partner/join?token=${token}` } : {}),
   };
 }
 
@@ -374,15 +520,22 @@ app.get('/api/admin/reservations', requireAuth, requireRole('admin'), async (req
 app.get('/api/admin/chauffeurs', requireAuth, requireRole('admin'), async (req, res) => {
   if (!pool) return res.json([]);
   const result = await pool.query(
-    `select id, full_name, phone, status
-     from public.chauffeurs
-     order by case when status = 'available' then 0 else 1 end, full_name`,
+    `select c.id, c.full_name, c.phone, c.status, c.partner_id, p.company_name as partner_name, p.status as partner_status
+     from public.chauffeurs c
+     left join public.partners p on p.id = c.partner_id
+     where p.status is null or p.status in ('approved', 'active')
+     order by case when c.status = 'available' then 0 else 1 end, c.full_name`,
   );
   res.json(result.rows);
 });
 
 app.get('/api/partner/trips', requireAuth, requireRole('partner'), async (req, res) => {
   if (!pool) return res.json([]);
+  const partner = await findPartnerByOwner(req.user.sub);
+  if (!partner) return res.status(404).json({ message: 'Partner profile not found.' });
+  if (partner.status === 'suspended') {
+    return res.status(403).json({ message: 'This partner account is suspended.' });
+  }
   const result = await pool.query(
     `select r.*, c.full_name as chauffeur_name
      from public.partners p
@@ -463,12 +616,35 @@ app.patch('/api/chauffeur/trips/:reservationId/status', requireAuth, requireRole
 
 app.get('/api/admin/overview', requireAuth, requireRole('admin'), async (req, res) => {
   const reservations = await listAllReservations();
-  const fleetEntries = await listFleet();
+  let availableVehicles = 0;
+  let pendingPartners = 0;
+  let activePartners = 0;
+
+  if (pool) {
+    const vehicleCount = await pool.query(
+      `select count(*)::int as count
+       from public.vehicles v
+       join public.partners p on p.id = v.partner_id
+       where v.status = 'available' and p.status in ('approved', 'active')`,
+    );
+    availableVehicles = vehicleCount.rows[0].count;
+    const partnerStats = await pool.query(
+      `select
+         count(*) filter (where status in ('invited', 'approved'))::int as pending,
+         count(*) filter (where status = 'active')::int as active
+       from public.partners`,
+    );
+    pendingPartners = partnerStats.rows[0].pending;
+    activePartners = partnerStats.rows[0].active;
+  }
+
   res.json({
     reservationsToday: reservations.length,
     activeTrips: reservations.filter((item) => ['assigned', 'in_transit'].includes(item.status)).length,
     pendingApprovals: reservations.filter((item) => item.status === 'pending_confirmation').length,
-    availableVehicles: fleetEntries.length,
+    availableVehicles,
+    pendingPartners,
+    activePartners,
     revenue: reservations.reduce((total, item) => total + Number(item.quote_total || 0), 0),
   });
 });
@@ -544,6 +720,25 @@ app.post('/api/auth/logout', (req, res) => {
   res.status(204).end();
 });
 
+app.post('/api/quotes', async (req, res) => {
+  const { pickup, destination, vehicleId, category: categoryName } = req.body || {};
+  if (!pickup || !destination) {
+    return res.status(400).json({ message: 'Pickup and destination are required.' });
+  }
+  if (!await validAirportRoute(pickup, destination)) {
+    return res.status(400).json({ message: 'This route is not available under the current launch policy.' });
+  }
+
+  const fleetEntries = await listFleet();
+  const category = fleetEntries.find((item) => item.id === vehicleId || item.category === categoryName);
+  if (!category) return res.status(400).json({ message: 'Select a valid vehicle category.' });
+  const rideCounts = getRideCounts(req.body, category);
+  if (rideCounts.error) return res.status(400).json({ message: rideCounts.error });
+
+  const quote = getPaymentQuote(category, { pickup, destination });
+  res.json({ category: category.category, passengers: rideCounts.passengers, luggage: rideCounts.luggage, quote });
+});
+
 app.post('/api/reservations', async (req, res) => {
   const payload = req.body || {};
   const requiredFields = ['pickup', 'destination', 'date', 'time', 'name'];
@@ -566,6 +761,8 @@ app.post('/api/reservations', async (req, res) => {
   const fleetEntries = await listFleet();
   const fleetEntry = fleetEntries.find((item) => item.category === categoryName || item.id === payload.vehicleId);
   if (!fleetEntry) return res.status(400).json({ message: 'Select a valid vehicle category.' });
+  const rideCounts = getRideCounts(payload, fleetEntry);
+  if (rideCounts.error) return res.status(400).json({ message: rideCounts.error });
   const quote = getPaymentQuote(fleetEntry, payload);
 
   const reservation = {
@@ -573,6 +770,9 @@ app.post('/api/reservations', async (req, res) => {
     customer_id: req.user.sub,
     customer_name: payload.name,
     customer_email: req.user.email,
+    customer_phone: String(payload.phone || '').trim(),
+    passenger_count: rideCounts.passengers,
+    luggage_count: rideCounts.luggage,
     pickup_airport_code: payload.pickup,
     destination_airport_code: payload.destination,
     pickup_date: payload.date,
@@ -597,6 +797,9 @@ app.post('/api/reservations', async (req, res) => {
           customer_id,
           customer_name,
           customer_email,
+          customer_phone,
+          passenger_count,
+          luggage_count,
           pickup_airport_code,
           destination_airport_code,
           pickup_date,
@@ -606,13 +809,16 @@ app.post('/api/reservations', async (req, res) => {
           quote_total,
           status,
           notes
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         returning *
       `,
       [
         req.user.sub,
         reservation.customer_name,
         reservation.customer_email,
+        reservation.customer_phone,
+        reservation.passenger_count,
+        reservation.luggage_count,
         reservation.pickup_airport_code,
         reservation.destination_airport_code,
         reservation.pickup_date,
@@ -666,7 +872,11 @@ app.post('/api/admin/assign', requireAuth, requireRole('admin'), async (req, res
     }
 
     const chauffeurResult = await client.query(
-      'select id, full_name, status from public.chauffeurs where id = $1 for update',
+      `select c.id, c.full_name, c.status, p.status as partner_status
+       from public.chauffeurs c
+       left join public.partners p on p.id = c.partner_id
+       where c.id = $1
+       for update of c`,
       [chauffeurId],
     );
     if (!chauffeurResult.rowCount) {
@@ -675,6 +885,10 @@ app.post('/api/admin/assign', requireAuth, requireRole('admin'), async (req, res
     }
 
     const chauffeur = chauffeurResult.rows[0];
+    if (chauffeur.partner_status && !['approved', 'active'].includes(chauffeur.partner_status)) {
+      await client.query('rollback');
+      return res.status(409).json({ message: 'Chauffeur belongs to a partner that is not active.' });
+    }
     const isCurrentAssignment = reservation.assigned_chauffeur_id === chauffeur.id;
     if (chauffeur.status !== 'available' && !isCurrentAssignment) {
       await client.query('rollback');
@@ -707,6 +921,510 @@ app.post('/api/admin/assign', requireAuth, requireRole('admin'), async (req, res
     throw error;
   } finally {
     client.release();
+  }
+});
+
+app.get('/api/admin/partners', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Partner management requires PostgreSQL.' });
+  const result = await pool.query(
+    `select p.*,
+            u.name as owner_name,
+            u.email as owner_email,
+            (select count(*)::int from public.chauffeurs c where c.partner_id = p.id) as chauffeur_count,
+            (select count(*)::int from public.vehicles v where v.partner_id = p.id) as vehicle_count
+     from public.partners p
+     left join public.users u on u.id = p.owner_user_id
+     order by p.created_at desc`,
+  );
+  res.json(result.rows.map(serializePartner));
+});
+
+app.get('/api/admin/partner-invitations', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Partner invitations require PostgreSQL.' });
+  const result = await pool.query(
+    `select id, company_name, contact_email, expires_at, used_at, revoked_at, partner_id, created_at
+     from public.partner_invitations
+     order by created_at desc
+     limit 50`,
+  );
+  res.json(result.rows.map((row) => serializeInvitation(row)));
+});
+
+app.post('/api/admin/partners/invite', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Partner invitations require PostgreSQL.' });
+
+  const companyName = String(req.body?.companyName || '').trim();
+  const contactEmail = normalizeEmail(req.body?.contactEmail || req.body?.email);
+  if (!companyName || !isValidEmail(contactEmail)) {
+    return res.status(400).json({ message: 'Company name and a valid contact email are required.' });
+  }
+
+  const existingUser = await findUserByEmail(contactEmail);
+  if (existingUser) {
+    return res.status(409).json({ message: 'An account with this email already exists.' });
+  }
+
+  const openInvite = await pool.query(
+    `select id from public.partner_invitations
+     where contact_email = $1 and used_at is null and revoked_at is null and expires_at > now()`,
+    [contactEmail],
+  );
+  if (openInvite.rowCount) {
+    return res.status(409).json({ message: 'An open invitation already exists for this email.' });
+  }
+
+  const token = createInvitationToken();
+  const tokenHash = hashInvitationToken(token);
+  const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const partnerInsert = await client.query(
+      `insert into public.partners (company_name, contact_email, status)
+       values ($1, $2, 'invited')
+       returning *`,
+      [companyName, contactEmail],
+    );
+    const inviteInsert = await client.query(
+      `insert into public.partner_invitations
+         (company_name, contact_email, token_hash, invited_by, expires_at, partner_id)
+       values ($1, $2, $3, $4, $5, $6)
+       returning *`,
+      [companyName, contactEmail, tokenHash, req.user.sub, expiresAt.toISOString(), partnerInsert.rows[0].id],
+    );
+    await client.query('commit');
+    res.status(201).json({
+      message: 'Partner invitation created.',
+      invitation: serializeInvitation(inviteInsert.rows[0], { includeToken: true, token }),
+      partner: serializePartner(partnerInsert.rows[0]),
+    });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+app.patch('/api/admin/partners/:partnerId', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Partner management requires PostgreSQL.' });
+  const nextStatus = String(req.body?.status || '').trim().toLowerCase();
+  if (!['approved', 'active', 'suspended'].includes(nextStatus)) {
+    return res.status(400).json({ message: 'Status must be approved, active, or suspended.' });
+  }
+
+  const result = await pool.query(
+    `update public.partners
+     set status = $1
+     where id = $2
+     returning *`,
+    [nextStatus, req.params.partnerId],
+  );
+  if (!result.rowCount) return res.status(404).json({ message: 'Partner not found.' });
+  res.json({ message: `Partner marked ${nextStatus}.`, partner: serializePartner(result.rows[0]) });
+});
+
+app.get('/api/admin/vehicles', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Fleet records require PostgreSQL.' });
+  const result = await pool.query(
+    `select v.*, p.company_name as partner_name, p.status as partner_status
+     from public.vehicles v
+     join public.partners p on p.id = v.partner_id
+     order by v.created_at desc`,
+  );
+  res.json(result.rows.map((row) => ({ ...serializeVehicle(row), partnerName: row.partner_name, partnerStatus: row.partner_status })));
+});
+
+app.get('/api/partner/invitations/:token', async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Partner invitations require PostgreSQL.' });
+  const tokenHash = hashInvitationToken(req.params.token);
+  const result = await pool.query(
+    `select id, company_name, contact_email, expires_at, used_at, revoked_at, partner_id, created_at
+     from public.partner_invitations
+     where token_hash = $1`,
+    [tokenHash],
+  );
+  if (!result.rowCount) return res.status(404).json({ message: 'Invitation not found.' });
+  const invitation = serializeInvitation(result.rows[0]);
+  if (invitation.status !== 'pending') {
+    return res.status(410).json({ message: `This invitation is ${invitation.status}.`, invitation });
+  }
+  res.json({ invitation });
+});
+
+app.post('/api/partner/accept-invitation', authRateLimit, async (req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Partner invitations require PostgreSQL.' });
+
+  const token = String(req.body?.token || '').trim();
+  const name = String(req.body?.name || '').trim();
+  const password = String(req.body?.password || '');
+  if (!token || !name || password.length < 8) {
+    return res.status(400).json({ message: 'Invitation token, name, and a password with at least 8 characters are required.' });
+  }
+
+  const tokenHash = hashInvitationToken(token);
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const inviteResult = await client.query(
+      `select * from public.partner_invitations
+       where token_hash = $1
+       for update`,
+      [tokenHash],
+    );
+    if (!inviteResult.rowCount) {
+      await client.query('rollback');
+      return res.status(404).json({ message: 'Invitation not found.' });
+    }
+
+    const invitation = inviteResult.rows[0];
+    if (invitation.revoked_at) {
+      await client.query('rollback');
+      return res.status(410).json({ message: 'This invitation has been revoked.' });
+    }
+    if (invitation.used_at) {
+      await client.query('rollback');
+      return res.status(410).json({ message: 'This invitation has already been used.' });
+    }
+    if (new Date(invitation.expires_at) < new Date()) {
+      await client.query('rollback');
+      return res.status(410).json({ message: 'This invitation has expired.' });
+    }
+
+    const existing = await client.query(
+      'select id from public.users where email = $1',
+      [invitation.contact_email],
+    );
+    if (existing.rowCount) {
+      await client.query('rollback');
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const userInsert = await client.query(
+      `insert into public.users (name, email, password_hash, role)
+       values ($1, $2, $3, 'partner')
+       returning id, name, email, role`,
+      [name, invitation.contact_email, passwordHash],
+    );
+    const user = userInsert.rows[0];
+
+    let partner;
+    if (invitation.partner_id) {
+      const partnerUpdate = await client.query(
+        `update public.partners
+         set owner_user_id = $1, company_name = $2, contact_email = $3, status = 'approved'
+         where id = $4
+         returning *`,
+        [user.id, invitation.company_name, invitation.contact_email, invitation.partner_id],
+      );
+      partner = partnerUpdate.rows[0];
+    } else {
+      const partnerInsert = await client.query(
+        `insert into public.partners (owner_user_id, company_name, contact_email, status)
+         values ($1, $2, $3, 'approved')
+         returning *`,
+        [user.id, invitation.company_name, invitation.contact_email],
+      );
+      partner = partnerInsert.rows[0];
+    }
+
+    await client.query(
+      `update public.partner_invitations
+       set used_at = now(), partner_id = $1
+       where id = $2`,
+      [partner.id, invitation.id],
+    );
+    await client.query('commit');
+
+    const safeUser = sanitizeUser(user);
+    setSessionCookie(res, safeUser);
+    res.status(201).json({
+      message: 'Partner account created. An administrator will activate fleet operations.',
+      user: safeUser,
+      partner: serializePartner(partner),
+    });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/partner/profile', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  res.json({ partner: serializePartner(req.partner) });
+});
+
+app.patch('/api/partner/profile', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  const companyName = String(req.body?.companyName ?? req.partner.company_name).trim();
+  const phone = String(req.body?.phone ?? req.partner.phone ?? '').trim();
+  const address = String(req.body?.address ?? req.partner.address ?? '').trim();
+  const notes = String(req.body?.notes ?? req.partner.notes ?? '').trim();
+  if (!companyName) return res.status(400).json({ message: 'Company name is required.' });
+
+  const result = await pool.query(
+    `update public.partners
+     set company_name = $1, phone = $2, address = $3, notes = $4
+     where id = $5
+     returning *`,
+    [companyName, phone || null, address || null, notes || null, req.partner.id],
+  );
+  res.json({ message: 'Partner profile updated.', partner: serializePartner(result.rows[0]) });
+});
+
+app.get('/api/partner/chauffeurs', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  const result = await pool.query(
+    `select c.id, c.full_name, c.phone, c.status, c.created_at, u.email
+     from public.chauffeurs c
+     left join public.users u on u.id = c.user_id
+     where c.partner_id = $1
+     order by c.full_name`,
+    [req.partner.id],
+  );
+  res.json(result.rows.map((row) => ({
+    id: row.id,
+    fullName: row.full_name,
+    phone: row.phone,
+    status: row.status,
+    email: row.email,
+    createdAt: row.created_at,
+  })));
+});
+
+app.post('/api/partner/chauffeurs', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  if (req.partner.status !== 'active') {
+    return res.status(403).json({ message: 'Partner must be active before managing chauffeurs.' });
+  }
+
+  const fullName = String(req.body?.fullName || req.body?.name || '').trim();
+  const email = normalizeEmail(req.body?.email);
+  const phone = String(req.body?.phone || '').trim();
+  const password = String(req.body?.password || '');
+  if (!fullName || !isValidEmail(email) || password.length < 8) {
+    return res.status(400).json({ message: 'Chauffeur name, email, and a password with at least 8 characters are required.' });
+  }
+
+  const existing = await findUserByEmail(email);
+  if (existing) return res.status(409).json({ message: 'An account with this email already exists.' });
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const userInsert = await client.query(
+      `insert into public.users (name, email, password_hash, role)
+       values ($1, $2, $3, 'chauffeur')
+       returning id, name, email, role`,
+      [fullName, email, passwordHash],
+    );
+    const chauffeurInsert = await client.query(
+      `insert into public.chauffeurs (user_id, partner_id, full_name, phone, status)
+       values ($1, $2, $3, $4, 'available')
+       returning *`,
+      [userInsert.rows[0].id, req.partner.id, fullName, phone || null],
+    );
+    await client.query('commit');
+    res.status(201).json({
+      message: 'Chauffeur added to your roster.',
+      chauffeur: {
+        id: chauffeurInsert.rows[0].id,
+        fullName: chauffeurInsert.rows[0].full_name,
+        phone: chauffeurInsert.rows[0].phone,
+        status: chauffeurInsert.rows[0].status,
+        email,
+      },
+    });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+app.patch('/api/partner/chauffeurs/:chauffeurId', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  if (req.partner.status !== 'active') {
+    return res.status(403).json({ message: 'Partner must be active before managing chauffeurs.' });
+  }
+
+  const nextStatus = String(req.body?.status || '').trim().toLowerCase();
+  if (!['available', 'offline'].includes(nextStatus)) {
+    return res.status(400).json({ message: 'Status must be available or offline.' });
+  }
+
+  const existing = await pool.query(
+    'select id, status from public.chauffeurs where id = $1 and partner_id = $2',
+    [req.params.chauffeurId, req.partner.id],
+  );
+  if (!existing.rowCount) return res.status(404).json({ message: 'Chauffeur not found for this partner.' });
+  if (existing.rows[0].status === 'assigned' && nextStatus === 'offline') {
+    return res.status(409).json({ message: 'Assigned chauffeurs cannot be taken offline until the trip completes.' });
+  }
+
+  const updated = await pool.query(
+    `update public.chauffeurs
+     set status = $1, full_name = coalesce(nullif($2, ''), full_name), phone = coalesce($3, phone)
+     where id = $4 and partner_id = $5
+     returning *`,
+    [
+      nextStatus,
+      String(req.body?.fullName || '').trim(),
+      req.body?.phone === undefined ? null : String(req.body.phone).trim() || null,
+      req.params.chauffeurId,
+      req.partner.id,
+    ],
+  );
+  res.json({
+    message: 'Chauffeur updated.',
+    chauffeur: {
+      id: updated.rows[0].id,
+      fullName: updated.rows[0].full_name,
+      phone: updated.rows[0].phone,
+      status: updated.rows[0].status,
+    },
+  });
+});
+
+app.get('/api/partner/vehicles', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  const result = await pool.query(
+    'select * from public.vehicles where partner_id = $1 order by created_at desc',
+    [req.partner.id],
+  );
+  res.json(result.rows.map(serializeVehicle));
+});
+
+app.post('/api/partner/vehicles', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  if (req.partner.status !== 'active') {
+    return res.status(403).json({ message: 'Partner must be active before managing vehicles.' });
+  }
+
+  const categorySlug = resolveCategorySlug(req.body?.categorySlug || req.body?.category);
+  if (!categorySlug) {
+    return res.status(400).json({
+      message: 'Vehicle category must be Business Class, First Class, or Luxury SUV.',
+    });
+  }
+
+  const meta = ALLOWED_FLEET_CATEGORIES[categorySlug];
+  const makeModel = String(req.body?.makeModel || meta.defaultMakeModel).trim();
+  const licensePlate = String(req.body?.licensePlate || '').trim().toUpperCase();
+  const color = String(req.body?.color || '').trim();
+  const year = req.body?.year === undefined || req.body?.year === '' ? null : Number(req.body.year);
+  const seats = Number(req.body?.seats ?? meta.seats);
+  const luggage = Number(req.body?.luggage ?? meta.luggage);
+
+  if (!makeModel || !licensePlate) {
+    return res.status(400).json({ message: 'Make/model and license plate are required.' });
+  }
+  if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
+    return res.status(400).json({ message: 'Seats must be an integer between 1 and 8.' });
+  }
+  if (!Number.isInteger(luggage) || luggage < 0 || luggage > 12) {
+    return res.status(400).json({ message: 'Luggage capacity must be an integer between 0 and 12.' });
+  }
+  if (year !== null && (!Number.isInteger(year) || year < 2000 || year > 2100)) {
+    return res.status(400).json({ message: 'Vehicle year is invalid.' });
+  }
+
+  try {
+    const insert = await pool.query(
+      `insert into public.vehicles
+         (partner_id, category_slug, make_model, license_plate, color, year, seats, luggage, status, notes)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, 'available', $9)
+       returning *`,
+      [
+        req.partner.id,
+        categorySlug,
+        makeModel,
+        licensePlate,
+        color || null,
+        year,
+        seats,
+        luggage,
+        String(req.body?.notes || '').trim() || null,
+      ],
+    );
+    res.status(201).json({ message: 'Vehicle added to your fleet.', vehicle: serializeVehicle(insert.rows[0]) });
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ message: 'A vehicle with this license plate already exists for your company.' });
+    }
+    throw error;
+  }
+});
+
+app.patch('/api/partner/vehicles/:vehicleId', requireAuth, requireRole('partner'), requireActivePartner, async (req, res) => {
+  if (req.partner.status !== 'active') {
+    return res.status(403).json({ message: 'Partner must be active before managing vehicles.' });
+  }
+
+  const existing = await pool.query(
+    'select * from public.vehicles where id = $1 and partner_id = $2',
+    [req.params.vehicleId, req.partner.id],
+  );
+  if (!existing.rowCount) return res.status(404).json({ message: 'Vehicle not found for this partner.' });
+
+  const current = existing.rows[0];
+  const nextStatus = req.body?.status === undefined
+    ? current.status
+    : String(req.body.status).trim().toLowerCase();
+  if (!['available', 'maintenance', 'inactive'].includes(nextStatus)) {
+    return res.status(400).json({ message: 'Status must be available, maintenance, or inactive.' });
+  }
+
+  const categorySlug = req.body?.categorySlug || req.body?.category
+    ? resolveCategorySlug(req.body.categorySlug || req.body.category)
+    : current.category_slug;
+  if (!categorySlug) {
+    return res.status(400).json({ message: 'Vehicle category must be Business Class, First Class, or Luxury SUV.' });
+  }
+
+  const makeModel = String(req.body?.makeModel ?? current.make_model).trim();
+  const licensePlate = String(req.body?.licensePlate ?? current.license_plate).trim().toUpperCase();
+  const color = req.body?.color === undefined ? current.color : String(req.body.color).trim() || null;
+  const year = req.body?.year === undefined
+    ? current.year
+    : (req.body.year === '' || req.body.year === null ? null : Number(req.body.year));
+  const seats = Number(req.body?.seats ?? current.seats);
+  const luggage = Number(req.body?.luggage ?? current.luggage);
+  const notes = req.body?.notes === undefined ? current.notes : String(req.body.notes).trim() || null;
+
+  if (!makeModel || !licensePlate) {
+    return res.status(400).json({ message: 'Make/model and license plate are required.' });
+  }
+  if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
+    return res.status(400).json({ message: 'Seats must be an integer between 1 and 8.' });
+  }
+  if (!Number.isInteger(luggage) || luggage < 0 || luggage > 12) {
+    return res.status(400).json({ message: 'Luggage capacity must be an integer between 0 and 12.' });
+  }
+  if (year !== null && (!Number.isInteger(year) || year < 2000 || year > 2100)) {
+    return res.status(400).json({ message: 'Vehicle year is invalid.' });
+  }
+
+  try {
+    const updated = await pool.query(
+      `update public.vehicles
+       set category_slug = $1,
+           make_model = $2,
+           license_plate = $3,
+           color = $4,
+           year = $5,
+           seats = $6,
+           luggage = $7,
+           status = $8,
+           notes = $9
+       where id = $10 and partner_id = $11
+       returning *`,
+      [categorySlug, makeModel, licensePlate, color, year, seats, luggage, nextStatus, notes, req.params.vehicleId, req.partner.id],
+    );
+    res.json({ message: 'Vehicle updated.', vehicle: serializeVehicle(updated.rows[0]) });
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ message: 'A vehicle with this license plate already exists for your company.' });
+    }
+    throw error;
   }
 });
 

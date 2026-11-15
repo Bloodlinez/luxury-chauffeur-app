@@ -136,6 +136,8 @@ test('PostgreSQL migrations are tracked and safe to rerun', async () => {
     '001_init.sql',
     '002_seed.sql',
     '003_reservation_chauffeur_assignment.sql',
+    '004_reservation_traveler_details.sql',
+    '005_partner_fleet_management.sql',
   ]);
 
   const airports = await databasePool.query('select count(*)::int as count from public.airports');
@@ -143,6 +145,11 @@ test('PostgreSQL migrations are tracked and safe to rerun', async () => {
 });
 
 test('PostgreSQL persists customer bookings and atomic chauffeur assignment', async () => {
+  const quote = await request(app)
+    .post('/api/quotes')
+    .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class', passengers: 2, luggage: 2 });
+  assert.equal(quote.status, 200);
+
   const created = await request(app)
     .post('/api/reservations')
     .set('Cookie', customerCookie)
@@ -153,10 +160,14 @@ test('PostgreSQL persists customer bookings and atomic chauffeur assignment', as
       date: '2026-12-29',
       time: '19:15',
       vehicleCategory: 'First Class',
+      passengers: 2,
+      luggage: 2,
+      phone: '+1-555-0142',
     });
 
   assert.equal(created.status, 201);
   assert.equal(created.body.reservation.status, 'pending_confirmation');
+  assert.equal(created.body.reservation.total, quote.body.quote.total);
   reservationId = created.body.reservation.id;
 
   const listed = await request(app)
@@ -174,6 +185,14 @@ test('PostgreSQL persists customer bookings and atomic chauffeur assignment', as
   assert.equal(beforeAssignment.rows[0].customer_id, customerId);
   assert.equal(beforeAssignment.rows[0].assigned_chauffeur_id, null);
   assert.equal(beforeAssignment.rows[0].status, 'pending_confirmation');
+
+  const travelerDetails = await databasePool.query(
+    'select customer_phone, passenger_count, luggage_count from public.reservations where id = $1',
+    [reservationId],
+  );
+  assert.equal(travelerDetails.rows[0].customer_phone, '+1-555-0142');
+  assert.equal(travelerDetails.rows[0].passenger_count, 2);
+  assert.equal(travelerDetails.rows[0].luggage_count, 2);
 
   const assignment = await request(app)
     .post('/api/admin/assign')
@@ -236,4 +255,116 @@ test('partner and chauffeur portals are scoped to assigned operational records',
     [chauffeurId],
   );
   assert.equal(chauffeurState.rows[0].status, 'available');
+});
+
+test('admin partner invitations create single-use accounts and scoped fleet records', async () => {
+  const forbiddenInvite = await request(app)
+    .post('/api/admin/partners/invite')
+    .set('Cookie', customerCookie)
+    .send({ companyName: 'Blocked Fleet', contactEmail: 'blocked-partner@integration.test' });
+  assert.equal(forbiddenInvite.status, 403);
+
+  const inviteEmail = `fleet-${randomUUID()}@integration.test`;
+  const invite = await request(app)
+    .post('/api/admin/partners/invite')
+    .set('Cookie', adminCookie)
+    .send({ companyName: 'Hudson Executive Cars', contactEmail: inviteEmail });
+  assert.equal(invite.status, 201);
+  assert.ok(invite.body.invitation.token);
+  assert.match(invite.body.invitation.invitePath, /\/partner\/join\?token=/);
+
+  const preview = await request(app).get(`/api/partner/invitations/${invite.body.invitation.token}`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.invitation.companyName, 'Hudson Executive Cars');
+
+  const accepted = await request(app)
+    .post('/api/partner/accept-invitation')
+    .send({
+      token: invite.body.invitation.token,
+      name: 'Hudson Owner',
+      password: 'PartnerFleet!42',
+    });
+  assert.equal(accepted.status, 201);
+  assert.equal(accepted.body.user.role, 'partner');
+  assert.equal(accepted.body.partner.status, 'approved');
+  const newPartnerCookie = accepted.headers['set-cookie'][0].split(';')[0];
+
+  const reuse = await request(app)
+    .post('/api/partner/accept-invitation')
+    .send({
+      token: invite.body.invitation.token,
+      name: 'Another Owner',
+      password: 'PartnerFleet!42',
+    });
+  assert.equal(reuse.status, 410);
+
+  const blockedFleet = await request(app)
+    .post('/api/partner/vehicles')
+    .set('Cookie', newPartnerCookie)
+    .send({
+      categorySlug: 'business-class',
+      makeModel: 'Mercedes E-Class',
+      licensePlate: 'NJ-AC-100',
+    });
+  assert.equal(blockedFleet.status, 403);
+
+  const activate = await request(app)
+    .patch(`/api/admin/partners/${accepted.body.partner.id}`)
+    .set('Cookie', adminCookie)
+    .send({ status: 'active' });
+  assert.equal(activate.status, 200);
+  assert.equal(activate.body.partner.status, 'active');
+
+  const vehicle = await request(app)
+    .post('/api/partner/vehicles')
+    .set('Cookie', newPartnerCookie)
+    .send({
+      categorySlug: 'luxury-suv',
+      makeModel: 'Cadillac Escalade',
+      licensePlate: 'NJ-AC-200',
+      color: 'Black',
+      year: 2024,
+    });
+  assert.equal(vehicle.status, 201);
+  assert.equal(vehicle.body.vehicle.category, 'Luxury SUV');
+
+  const rejectedCategory = await request(app)
+    .post('/api/partner/vehicles')
+    .set('Cookie', newPartnerCookie)
+    .send({
+      categorySlug: 'infiniti-qx80',
+      makeModel: 'Infiniti QX80',
+      licensePlate: 'NJ-QX-800',
+    });
+  assert.equal(rejectedCategory.status, 400);
+
+  const chauffeur = await request(app)
+    .post('/api/partner/chauffeurs')
+    .set('Cookie', newPartnerCookie)
+    .send({
+      fullName: 'Casey Driver',
+      email: `casey-${randomUUID()}@integration.test`,
+      phone: '+1-555-0199',
+      password: 'ChauffeurPass!99',
+    });
+  assert.equal(chauffeur.status, 201);
+
+  const isolation = await request(app)
+    .get('/api/partner/vehicles')
+    .set('Cookie', partnerCookie);
+  assert.equal(isolation.status, 200);
+  assert.equal(isolation.body.some((item) => item.licensePlate === 'NJ-AC-200'), false);
+
+  const adminVehicles = await request(app)
+    .get('/api/admin/vehicles')
+    .set('Cookie', adminCookie);
+  assert.equal(adminVehicles.status, 200);
+  assert.equal(adminVehicles.body.some((item) => item.licensePlate === 'NJ-AC-200'), true);
+
+  const overview = await request(app)
+    .get('/api/admin/overview')
+    .set('Cookie', adminCookie);
+  assert.equal(overview.status, 200);
+  assert.ok(overview.body.availableVehicles >= 1);
+  assert.ok(overview.body.activePartners >= 1);
 });

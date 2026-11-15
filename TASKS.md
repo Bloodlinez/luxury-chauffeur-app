@@ -16,14 +16,15 @@
 - [ ] Implement multi-step reservation flow with real server quotes and statuses
 - [x] Build database-backed partner and chauffeur trip portals with status transitions
 - [x] Add transactional admin chauffeur assignment to persisted reservations
-- [ ] Add partner invitations, partner roster, and vehicle/fleet management
-- [ ] Add remaining admin management and fleet controls
+- [x] Add partner invitations, partner roster, and vehicle/fleet management
+- [x] Add remaining admin management and fleet controls
 - [ ] Add Stripe sandbox checkout, dispatch, notifications, and flight monitoring hooks
 - [ ] Add maps, routing, and status tracking integrations
 - [ ] Add proper reporting, audit logs, and role-specific access controls
 
 ## Phase 3 - Quality and deployment
 - [x] Run frontend build and backend tests for implemented security and dispatch flows
-- [ ] Test partner invitation and remaining customer/admin workflows
+- [x] Test partner invitation, partner fleet isolation, and admin partner controls
+- [ ] Test remaining customer account and payment workflows
 - [ ] Add deployment configuration for preview and production hosting
 - [ ] Verify no secrets or credential material are committed

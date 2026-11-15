@@ -449,19 +449,38 @@ main {
 
 .booking-progress {
   display: flex;
-  gap: 10px;
+  gap: 14px;
   margin-bottom: 24px;
 }
 
-.progress-dot {
-  width: 36px;
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+.booking-step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 2px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
 }
 
-.progress-dot.active {
-  background: linear-gradient(90deg, var(--gold-soft), var(--gold));
+.booking-step span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.booking-step.active,
+.booking-step.complete {
+  border-bottom-color: var(--gold);
+  color: var(--text);
+}
+
+.booking-step.active span,
+.booking-step.complete span {
+  color: var(--gold-soft);
 }
 
 .booking-form {
@@ -518,6 +537,57 @@ textarea { resize: vertical; }
   justify-content: space-between;
   gap: 12px;
 }
+
+.booking-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.booking-actions .btn { min-width: 132px; }
+
+.booking-review {
+  display: grid;
+  gap: 12px;
+}
+
+.booking-review > div,
+.quote-breakdown > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.booking-review span,
+.quote-breakdown span,
+.booking-capacity,
+.optional-label {
+  color: var(--text-soft);
+}
+
+.booking-review strong { text-align: right; }
+
+.quote-breakdown {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.quote-total {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 1.15rem;
+}
+
+.quote-total strong { color: var(--gold-soft); }
+
+.booking-capacity {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.optional-label { font-weight: 400; }
 
 .booking-side-panel {
   display: flex;
@@ -609,9 +679,90 @@ th {
   color: var(--success);
 }
 
+.status-pending_confirmation { color: #e6b45e; background: rgba(230, 180, 94, 0.12); }
+.status-assigned { color: #8fb6df; background: rgba(103, 157, 211, 0.13); }
+.status-in_transit { color: #87c8bb; background: rgba(38, 166, 123, 0.12); }
+.status-cancelled { color: #e58b82; background: rgba(206, 84, 74, 0.13); }
+
 .stats-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 24px;
+}
+
+.admin-stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.ops-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ops-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+
+.ops-form input,
+.ops-form select,
+.ops-form textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  padding: 0.8rem 0.9rem;
+}
+
+.panel-copy {
+  color: var(--text-soft);
+  margin-top: 0;
+}
+
+.invite-link code {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0.35rem 0.55rem;
+  border-radius: 8px;
+  background: rgba(198, 166, 103, 0.12);
+  color: var(--gold-soft);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.status-invited,
+.status-pending,
+.status-approved,
+.status-maintenance,
+.status-offline,
+.status-inactive { color: #e6b45e; background: rgba(230, 180, 94, 0.12); }
+
+.status-active,
+.status-available,
+.status-accepted { color: var(--success); background: rgba(38, 166, 123, 0.12); }
+
+.status-suspended,
+.status-revoked,
+.status-expired { color: #e58b82; background: rgba(206, 84, 74, 0.13); }
+
+@media (max-width: 900px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stat-card {
@@ -720,6 +871,16 @@ th {
   .btn,
   .nav-button {
     width: 100%;
+  }
+
+  .booking-step {
+    gap: 5px;
+    font-size: 0.78rem;
+  }
+
+  .booking-actions .btn {
+    width: auto;
+    flex: 1;
   }
 
   .hero-actions,
