@@ -121,9 +121,9 @@ function App() {
         <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} user={user} onBookingSuccess={() => fetchReservations(user)} />} />
         <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={setAuthMode} authForm={authForm} setAuthForm={setAuthForm} onSubmit={handleAuthSubmit} />} />
         <Route path="/dashboard" element={<CustomerDashboardPage user={user} reservations={reservations} />} />
-        <Route path="/admin" element={<AdminPage metrics={metrics} reservations={reservations} />} />
-        <Route path="/partner" element={<PartnerPage />} />
-        <Route path="/chauffeur" element={<ChauffeurPage />} />
+        <Route path="/admin" element={<AdminPage metrics={metrics} reservations={reservations} user={user} onAssignment={async () => { await fetchReservations(user); await fetchMetrics(user); }} />} />
+        <Route path="/partner" element={<PartnerPage user={user} />} />
+        <Route path="/chauffeur" element={<ChauffeurPage user={user} />} />
         <Route path="/contact" element={<ContactPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
@@ -137,11 +137,11 @@ function Header({ user, onLogout }) {
     { to: '/', label: 'Home' },
     { to: '/fleet', label: 'Fleet' },
     { to: '/booking', label: 'Booking' },
-    { to: '/admin', label: 'Admin' },
-    { to: '/partner', label: 'Partner' },
-    { to: '/chauffeur', label: 'Chauffeur' },
     { to: '/contact', label: 'Contact' },
   ];
+  if (user?.role === 'admin') navItems.push({ to: '/admin', label: 'Admin' });
+  if (user?.role === 'partner') navItems.push({ to: '/partner', label: 'Partner' });
+  if (user?.role === 'chauffeur') navItems.push({ to: '/chauffeur', label: 'Chauffeur' });
 
   return (
     <header className="topbar">
@@ -493,10 +493,11 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
           </form>
         ) : (
           <div className="success-box">
-            <span className="eyebrow">Reservation confirmed</span>
+            <span className="eyebrow">Request received</span>
             <h3>{reservation?.category}</h3>
             <p>{reservation?.pickup} → {reservation?.destination}</p>
             <p>{reservation?.date} at {reservation?.time}</p>
+            <p>Pending confirmation</p>
             <strong>${reservation?.total}</strong>
             <Link to="/dashboard" className="btn btn-primary">View dashboard</Link>
           </div>
@@ -528,13 +529,23 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
 }
 
 function CustomerDashboardPage({ user, reservations }) {
-  const currentUser = user || { name: 'Guest Traveler' };
+  if (!user || user.role !== 'customer') {
+    return (
+      <main className="page-shell small-shell">
+        <div className="card-panel">
+          <h2>Customer sign-in required</h2>
+          <p>Sign in to review your reservations and travel preferences.</p>
+          <Link to="/login" className="btn btn-primary">Sign in</Link>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="page-shell dashboard-shell">
       <div className="section-head left">
         <span className="eyebrow">Customer portal</span>
-        <h2>Welcome back, {currentUser.name.split(' ')[0]}.</h2>
+        <h2>Welcome back, {user.name.split(' ')[0]}.</h2>
       </div>
       <div className="dashboard-grid">
         <div className="card-panel">
@@ -560,7 +571,56 @@ function CustomerDashboardPage({ user, reservations }) {
   );
 }
 
-function AdminPage({ metrics, reservations }) {
+function AdminPage({ metrics, reservations, user, onAssignment }) {
+  const [chauffeurs, setChauffeurs] = useState([]);
+  const [selectedChauffeurs, setSelectedChauffeurs] = useState({});
+  const [assignmentNotice, setAssignmentNotice] = useState('');
+
+  const refreshChauffeurs = async () => {
+    const response = await fetch('/api/admin/chauffeurs', { credentials: 'include' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || 'Unable to load chauffeur availability.');
+    setChauffeurs(data);
+  };
+
+  useEffect(() => {
+    if (user?.role !== 'admin') {
+      setChauffeurs([]);
+      return;
+    }
+    refreshChauffeurs().catch((error) => setAssignmentNotice(error.message));
+  }, [user]);
+
+  const assignChauffeur = async (reservationId) => {
+    const chauffeurId = selectedChauffeurs[reservationId];
+    if (!chauffeurId) return;
+
+    const response = await fetch('/api/admin/assign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ reservationId, chauffeurId }),
+    });
+    const data = await response.json();
+    setAssignmentNotice(response.ok ? data.message : data.message || 'Assignment failed.');
+    if (response.ok) {
+      setSelectedChauffeurs((current) => ({ ...current, [reservationId]: '' }));
+      await Promise.all([onAssignment(), refreshChauffeurs()]);
+    }
+  };
+
+  if (user?.role !== 'admin') {
+    return (
+      <main className="page-shell small-shell">
+        <div className="card-panel">
+          <h2>Administrator access required</h2>
+          <p>Sign in with an administrator account to open dispatch operations.</p>
+          <Link to="/login" className="btn btn-primary">Sign in</Link>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="page-shell admin-shell">
       <div className="section-head left">
@@ -585,6 +645,7 @@ function AdminPage({ metrics, reservations }) {
                 <th>Route</th>
                 <th>Category</th>
                 <th>Status</th>
+                <th>Chauffeur</th>
               </tr>
             </thead>
             <tbody>
@@ -594,68 +655,175 @@ function AdminPage({ metrics, reservations }) {
                   <td>{reservation.pickup} → {reservation.destination}</td>
                   <td>{reservation.category}</td>
                   <td><span className="status-pill">{reservation.status}</span></td>
+                  <td>
+                    {reservation.chauffeur_name ? (
+                      <span>{reservation.chauffeur_name}</span>
+                    ) : (
+                      <div className="assignment-control">
+                        <select
+                          aria-label={`Chauffeur for reservation ${reservation.id}`}
+                          value={selectedChauffeurs[reservation.id] || ''}
+                          onChange={(event) => setSelectedChauffeurs((current) => ({ ...current, [reservation.id]: event.target.value }))}
+                        >
+                          <option value="">Select chauffeur</option>
+                          {chauffeurs.filter((chauffeur) => chauffeur.status === 'available').map((chauffeur) => (
+                            <option key={chauffeur.id} value={chauffeur.id}>{chauffeur.full_name}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn-secondary small"
+                          disabled={!selectedChauffeurs[reservation.id]}
+                          onClick={() => assignChauffeur(reservation.id)}
+                        >
+                          Assign
+                        </button>
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        {assignmentNotice && <p role="status">{assignmentNotice}</p>}
       </div>
     </main>
   );
 }
 
-function PartnerPage() {
+function PartnerPage({ user }) {
+  const [trips, setTrips] = useState([]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (user?.role !== 'partner') return;
+    fetch('/api/partner/trips', { credentials: 'include' })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Unable to load partner trips.');
+        return data;
+      })
+      .then(setTrips)
+      .catch((requestError) => setError(requestError.message));
+  }, [user]);
+
+  if (user?.role !== 'partner') {
+    return (
+      <main className="page-shell small-shell">
+        <div className="card-panel">
+          <h2>Partner access required</h2>
+          <p>Sign in with an approved partner account to view assigned operations.</p>
+          <Link to="/login" className="btn btn-primary">Sign in</Link>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="page-shell small-shell">
       <div className="section-head left">
         <span className="eyebrow">Partner portal</span>
-        <h2>Invitation-only network operations.</h2>
+        <h2>Partner trip operations.</h2>
       </div>
-      <div className="portal-grid">
-        <div className="card-panel">
-          <h3>Pending invitations</h3>
-          <ul className="simple-list">
-            <li>North Shore Transfer Group — accepted</li>
-            <li>Hudson Valley Motion — pending review</li>
-            <li>Garden State Executive — invitation issued</li>
-          </ul>
-        </div>
-        <div className="card-panel">
-          <h3>Operational highlights</h3>
-          <ul className="simple-list">
-            <li>Fleet availability managed daily</li>
-            <li>Vehicle approvals require admin review</li>
-            <li>Assignment acceptance monitored</li>
-          </ul>
-        </div>
+      <div className="card-panel big-panel">
+        <h3>Assigned trips</h3>
+        {error && <p role="alert">{error}</p>}
+        {trips.length === 0 ? <p>No trips have been assigned to your fleet.</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Route</th><th>Pickup</th><th>Vehicle</th><th>Chauffeur</th><th>Status</th></tr></thead>
+              <tbody>{trips.map((trip) => (
+                <tr key={trip.id}>
+                  <td>{trip.pickup} → {trip.destination}</td>
+                  <td>{trip.date} at {trip.time}</td>
+                  <td>{trip.category}</td>
+                  <td>{trip.chauffeur_name}</td>
+                  <td><span className="status-pill">{trip.status.replaceAll('_', ' ')}</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
       </div>
     </main>
   );
 }
 
-function ChauffeurPage() {
+function ChauffeurPage({ user }) {
+  const [trips, setTrips] = useState([]);
+  const [error, setError] = useState('');
+
+  const refreshTrips = async () => {
+    const response = await fetch('/api/chauffeur/trips', { credentials: 'include' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || 'Unable to load assigned trips.');
+    setTrips(data);
+  };
+
+  useEffect(() => {
+    if (user?.role !== 'chauffeur') return;
+    refreshTrips().catch((requestError) => setError(requestError.message));
+  }, [user]);
+
+  const updateTripStatus = async (trip, status) => {
+    const response = await fetch(`/api/chauffeur/trips/${trip.id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data.message || 'Unable to update trip status.');
+      return;
+    }
+    setError('');
+    await refreshTrips();
+  };
+
+  if (user?.role !== 'chauffeur') {
+    return (
+      <main className="page-shell small-shell">
+        <div className="card-panel">
+          <h2>Chauffeur sign-in required</h2>
+          <p>Sign in with your chauffeur account to view and update assigned trips.</p>
+          <Link to="/login" className="btn btn-primary">Sign in</Link>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="page-shell small-shell">
       <div className="section-head left">
         <span className="eyebrow">Chauffeur portal</span>
         <h2>Route readiness and trip updates.</h2>
       </div>
-      <div className="portal-grid">
-        <div className="card-panel">
-          <h3>Assigned trips</h3>
-          <ul className="simple-list">
-            <li>EWR → Manhattan • 18:30 • First Class</li>
-            <li>TEB → PHL • 09:00 • Business Class</li>
-          </ul>
-        </div>
-        <div className="card-panel">
-          <h3>Status updates</h3>
-          <ul className="simple-list">
-            <li>Vehicle verified</li>
-            <li>Airport instructions reviewed</li>
-            <li>Passenger notes confirmed</li>
-          </ul>
-        </div>
+      <div className="card-panel big-panel">
+        <h3>My trips</h3>
+        {error && <p role="alert">{error}</p>}
+        {trips.length === 0 ? <p>No trips are currently assigned.</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Route</th><th>Pickup</th><th>Vehicle</th><th>Flight</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody>{trips.map((trip) => (
+                <tr key={trip.id}>
+                  <td>{trip.pickup} → {trip.destination}</td>
+                  <td>{trip.date} at {trip.time}</td>
+                  <td>{trip.category}</td>
+                  <td>{trip.flight_number || '—'}</td>
+                  <td><span className="status-pill">{trip.status.replaceAll('_', ' ')}</span></td>
+                  <td>
+                    {trip.status === 'assigned' && <button type="button" className="btn btn-primary small" onClick={() => updateTripStatus(trip, 'in_transit')}>Start trip</button>}
+                    {trip.status === 'in_transit' && <button type="button" className="btn btn-secondary small" onClick={() => updateTripStatus(trip, 'completed')}>Complete</button>}
+                    {trip.status === 'completed' && <span>Complete</span>}
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
       </div>
     </main>
   );

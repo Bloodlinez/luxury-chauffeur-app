@@ -12,7 +12,7 @@ A luxury chauffeur booking application with a React/Vite client and an Express A
 - Server-generated reservation quotes; checkout amounts are read from the reservation
 - PostgreSQL schema and idempotent seed data in `server/migrations`
 
-Partner and chauffeur screens, payment completion, dispatch, notifications, flight monitoring, and customer account workflows are still incomplete. The application is not production-ready until those workflows and deployment checks are completed.
+Partner and chauffeur trip portals use database-backed assignments and status transitions. Partner invitations, fleet management, payment completion, notifications, flight monitoring, and full customer account workflows are still incomplete. The application is not production-ready until those workflows and deployment checks are completed.
 
 ## Local setup
 
@@ -27,7 +27,7 @@ The API intentionally refuses to start without `DATABASE_URL` outside the test r
 
 - `npm run dev` starts the API and Vite client.
 - `npm run build` creates the frontend production bundle.
-- `npm test` runs backend security regression tests.
+- `npm test` runs security tests and starts a real embedded PostgreSQL instance for migrations, persistence, assignment, and trip-status integration tests.
 
 ## API security
 

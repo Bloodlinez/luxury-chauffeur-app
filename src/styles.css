@@ -571,6 +571,18 @@ textarea { resize: vertical; }
   overflow-x: auto;
 }
 
+.assignment-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 250px;
+}
+
+.assignment-control select {
+  min-width: 160px;
+  padding: 0.65rem 0.75rem;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import pg from 'pg';
@@ -122,11 +122,35 @@ async function initializeDatabase() {
     if (!isTestEnvironment) throw new Error('DATABASE_URL is required to start the API.');
     return;
   }
-  const files = ['001_init.sql', '002_seed.sql'];
+  await pool.query(`
+    create table if not exists public.schema_migrations (
+      name text primary key,
+      applied_at timestamptz not null default now()
+    )
+  `);
+  const files = readdirSync(path.join(__dirname, 'migrations'))
+    .filter((file) => /^\d+_[\w-]+\.sql$/.test(file))
+    .sort();
 
   for (const file of files) {
-    const sql = readSqlFile(file);
-    await pool.query(sql);
+    const alreadyApplied = await pool.query(
+      'select 1 from public.schema_migrations where name = $1',
+      [file],
+    );
+    if (alreadyApplied.rowCount) continue;
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(readSqlFile(file));
+      await client.query('insert into public.schema_migrations (name) values ($1)', [file]);
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 
@@ -189,7 +213,12 @@ async function listReservationsForUser(userId) {
 
 async function listAllReservations() {
   if (pool) {
-    const result = await pool.query('select * from public.reservations order by created_at desc');
+    const result = await pool.query(
+      `select r.*, c.full_name as chauffeur_name
+       from public.reservations r
+       left join public.chauffeurs c on c.id = r.assigned_chauffeur_id
+       order by r.created_at desc`,
+    );
     return getPopulationSummary(result.rows);
   }
 
@@ -335,11 +364,101 @@ app.get('/api/me', requireAuth, async (req, res) => {
 });
 
 app.get('/api/my-reservations', requireAuth, async (req, res) => {
-  res.json(await listReservationsForUser(req.user.email));
+  res.json(await listReservationsForUser(req.user.sub));
 });
 
 app.get('/api/admin/reservations', requireAuth, requireRole('admin'), async (req, res) => {
   res.json(await listAllReservations());
+});
+
+app.get('/api/admin/chauffeurs', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!pool) return res.json([]);
+  const result = await pool.query(
+    `select id, full_name, phone, status
+     from public.chauffeurs
+     order by case when status = 'available' then 0 else 1 end, full_name`,
+  );
+  res.json(result.rows);
+});
+
+app.get('/api/partner/trips', requireAuth, requireRole('partner'), async (req, res) => {
+  if (!pool) return res.json([]);
+  const result = await pool.query(
+    `select r.*, c.full_name as chauffeur_name
+     from public.partners p
+     join public.chauffeurs c on c.partner_id = p.id
+     join public.reservations r on r.assigned_chauffeur_id = c.id
+     where p.owner_user_id = $1
+     order by r.pickup_date asc, r.pickup_time asc`,
+    [req.user.sub],
+  );
+  res.json(getPopulationSummary(result.rows));
+});
+
+app.get('/api/chauffeur/trips', requireAuth, requireRole('chauffeur'), async (req, res) => {
+  if (!pool) return res.json([]);
+  const result = await pool.query(
+    `select r.*, c.full_name as chauffeur_name
+     from public.chauffeurs c
+     join public.reservations r on r.assigned_chauffeur_id = c.id
+     where c.user_id = $1
+     order by r.pickup_date asc, r.pickup_time asc`,
+    [req.user.sub],
+  );
+  res.json(getPopulationSummary(result.rows));
+});
+
+app.patch('/api/chauffeur/trips/:reservationId/status', requireAuth, requireRole('chauffeur'), async (req, res) => {
+  const { status: nextStatus } = req.body || {};
+  if (!['in_transit', 'completed'].includes(nextStatus)) {
+    return res.status(400).json({ message: 'Choose a supported trip status.' });
+  }
+  if (!pool) return res.status(503).json({ message: 'Trip status updates require PostgreSQL.' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const chauffeurResult = await client.query(
+      'select id from public.chauffeurs where user_id = $1 for update',
+      [req.user.sub],
+    );
+    if (!chauffeurResult.rowCount) {
+      await client.query('rollback');
+      return res.status(404).json({ message: 'Chauffeur profile not found.' });
+    }
+
+    const chauffeurId = chauffeurResult.rows[0].id;
+    const reservationResult = await client.query(
+      'select id, status from public.reservations where id = $1 and assigned_chauffeur_id = $2 for update',
+      [req.params.reservationId, chauffeurId],
+    );
+    if (!reservationResult.rowCount) {
+      await client.query('rollback');
+      return res.status(404).json({ message: 'Assigned trip not found.' });
+    }
+
+    const currentStatus = reservationResult.rows[0].status;
+    const expectedCurrentStatus = nextStatus === 'in_transit' ? 'assigned' : 'in_transit';
+    if (currentStatus !== expectedCurrentStatus) {
+      await client.query('rollback');
+      return res.status(409).json({ message: `Trip must be ${expectedCurrentStatus} before it can become ${nextStatus}.` });
+    }
+
+    const updated = await client.query(
+      'update public.reservations set status = $1 where id = $2 returning *',
+      [nextStatus, req.params.reservationId],
+    );
+    if (nextStatus === 'completed') {
+      await client.query("update public.chauffeurs set status = 'available' where id = $1", [chauffeurId]);
+    }
+    await client.query('commit');
+    res.json({ message: 'Trip status updated.', reservation: getPopulationSummary(updated.rows)[0] });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
 });
 
 app.get('/api/admin/overview', requireAuth, requireRole('admin'), async (req, res) => {
@@ -520,25 +639,75 @@ app.post('/api/reservations', async (req, res) => {
 });
 
 app.post('/api/admin/assign', requireAuth, requireRole('admin'), async (req, res) => {
-  const { reservationId, chauffeur } = req.body;
-  const reservation = await getReservationById(reservationId);
-
-  if (!reservation) {
-    return res.status(404).json({ message: 'Reservation not found.' });
+  const { reservationId, chauffeurId } = req.body || {};
+  if (!reservationId || !chauffeurId) {
+    return res.status(400).json({ message: 'Reservation and chauffeur are required.' });
+  }
+  if (!pool) {
+    return res.status(503).json({ message: 'Chauffeur assignment requires PostgreSQL.' });
   }
 
-  if (pool) {
-    const updated = await pool.query(
-      'update public.reservations set status = $1, updated_at = now() where id = $2 returning *',
-      ['assigned', reservationId],
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const reservationResult = await client.query(
+      'select id, status, assigned_chauffeur_id from public.reservations where id = $1 for update',
+      [reservationId],
     );
-    return res.json({ message: 'Chauffeur assigned.', reservation: updated.rows[0] });
-  }
+    if (!reservationResult.rowCount) {
+      await client.query('rollback');
+      return res.status(404).json({ message: 'Reservation not found.' });
+    }
 
-  const target = testReservations.find((entry) => entry.id === reservationId);
-  target.status = 'assigned';
-  target.chauffeur = chauffeur || 'Adele Brooks';
-  return res.json({ message: 'Chauffeur assigned.', reservation: target });
+    const reservation = reservationResult.rows[0];
+    if (['cancelled', 'completed', 'in_transit'].includes(reservation.status)) {
+      await client.query('rollback');
+      return res.status(409).json({ message: 'This reservation can no longer be assigned.' });
+    }
+
+    const chauffeurResult = await client.query(
+      'select id, full_name, status from public.chauffeurs where id = $1 for update',
+      [chauffeurId],
+    );
+    if (!chauffeurResult.rowCount) {
+      await client.query('rollback');
+      return res.status(404).json({ message: 'Chauffeur not found.' });
+    }
+
+    const chauffeur = chauffeurResult.rows[0];
+    const isCurrentAssignment = reservation.assigned_chauffeur_id === chauffeur.id;
+    if (chauffeur.status !== 'available' && !isCurrentAssignment) {
+      await client.query('rollback');
+      return res.status(409).json({ message: 'Chauffeur is not available.' });
+    }
+
+    if (reservation.assigned_chauffeur_id && !isCurrentAssignment) {
+      await client.query(
+        "update public.chauffeurs set status = 'available' where id = $1",
+        [reservation.assigned_chauffeur_id],
+      );
+    }
+    await client.query(
+      "update public.chauffeurs set status = 'assigned' where id = $1",
+      [chauffeur.id],
+    );
+    const updated = await client.query(
+      `update public.reservations
+       set assigned_chauffeur_id = $1, status = 'assigned', assigned_at = now()
+       where id = $2 returning *`,
+      [chauffeur.id, reservationId],
+    );
+    await client.query('commit');
+    res.json({
+      message: 'Chauffeur assigned.',
+      reservation: { ...updated.rows[0], chauffeur_name: chauffeur.full_name },
+    });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
 });
 
 app.post('/api/payments/checkout-session', requireAuth, async (req, res) => {
@@ -583,4 +752,4 @@ if (isMainModule) {
   });
 }
 
-export { app };
+export { app, initializeDatabase, pool };

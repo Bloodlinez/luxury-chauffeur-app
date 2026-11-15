@@ -60,5 +60,13 @@ test('secure registration and server-generated quote produce pending confirmatio
   assert.ok(reservation.body.quote.total > 0);
   assert.equal(reservation.body.reservation.total, reservation.body.quote.total);
   assert.ok(reservation.body.reservation.total > 1);
+
+  const myReservations = await request(app)
+    .get('/api/my-reservations')
+    .set('Cookie', sessionCookie);
+
+  assert.equal(myReservations.status, 200);
+  assert.equal(myReservations.body.length, 1);
+  assert.equal(myReservations.body[0].customer_id, register.body.user.id);
 });
 
