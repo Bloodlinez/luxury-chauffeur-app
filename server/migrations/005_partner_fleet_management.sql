@@ -61,7 +61,7 @@ update public.fleet_categories
 set
   description = case slug
     when 'business-class' then 'Mercedes E-Class or Similar'
-    when 'first-class' then 'Mercedes S-Class or Similar'
+    when 'first-class' then 'Mercedes-Benz S-Class or Similar'
     when 'luxury-suv' then 'Cadillac Escalade or Similar'
     else description
   end,
