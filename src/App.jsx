@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Field,
+  FormBanner,
+  formatStatus,
+  isBannedVehicleModel,
+  isFuturePickup,
+  isValidEmail,
+  shortReference,
+  useFormErrors,
+} from './forms.jsx';
 
 const airportOptions = [
   { code: 'EWR', name: 'Newark Liberty International Airport', state: 'NJ' },
@@ -19,23 +29,32 @@ const defaultBooking = {
   phone: '',
   pickup: 'EWR',
   destination: 'JFK',
-  date: '2026-12-16',
-  time: '18:00',
-  flightNumber: 'AA188',
+  date: '',
+  time: '',
+  flightNumber: '',
   passengers: 2,
   luggage: 2,
   notes: '',
   category: 'Business Class',
 };
 
+function tomorrowDate() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function App() {
   const [fleet, setFleet] = useState([]);
   const [airports, setAirports] = useState(airportOptions);
   const [reservations, setReservations] = useState([]);
+  const [reservationsState, setReservationsState] = useState('idle');
   const [metrics, setMetrics] = useState(null);
   const [user, setUser] = useState(null);
   const [authMode, setAuthMode] = useState('login');
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' });
+  const authErrors = useFormErrors();
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchAirports();
@@ -66,12 +85,21 @@ function App() {
   const fetchReservations = async (currentUser) => {
     if (!currentUser) {
       setReservations([]);
+      setReservationsState('idle');
       return;
     }
-    const endpoint = currentUser.role === 'admin' ? '/api/admin/reservations' : '/api/my-reservations';
-    const response = await fetch(endpoint, { credentials: 'include' });
-    const data = await response.json();
-    setReservations(response.ok ? data : []);
+    setReservationsState('loading');
+    try {
+      const endpoint = currentUser.role === 'admin' ? '/api/admin/reservations' : '/api/my-reservations';
+      const response = await fetch(endpoint, { credentials: 'include' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Unable to load reservations.');
+      setReservations(data);
+      setReservationsState('ready');
+    } catch (error) {
+      setReservations([]);
+      setReservationsState('error');
+    }
   };
 
   const fetchMetrics = async (currentUser) => {
@@ -86,30 +114,48 @@ function App() {
 
   const handleAuthSubmit = async (event) => {
     event.preventDefault();
+    const nextErrors = {};
+    if (authMode === 'register' && !authForm.name.trim()) nextErrors.name = 'Enter your full name.';
+    if (!authForm.email.trim()) nextErrors.email = 'Enter your email address.';
+    else if (!isValidEmail(authForm.email)) nextErrors.email = 'Enter a valid email address.';
+    if (!authForm.password) nextErrors.password = authMode === 'login' ? 'Enter your password.' : 'Create a password.';
+    else if (authMode === 'register' && authForm.password.length < 8) {
+      nextErrors.password = 'Use at least 8 characters for your password.';
+    }
+    if (!authErrors.applyErrors(nextErrors, ['name', 'email', 'password'])) return;
+
     const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
     const payload = authMode === 'login'
       ? { email: authForm.email, password: authForm.password }
       : authForm;
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(payload),
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      alert(data.message || 'Authentication failed.');
-      return;
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        authErrors.applyApiErrors(data, 'Authentication failed.');
+        return;
+      }
+      authErrors.clearErrors();
+      setUser(data.user);
+      if (data.user.role === 'admin') navigate('/admin');
+      else if (data.user.role === 'partner') navigate('/partner');
+      else if (data.user.role === 'chauffeur') navigate('/chauffeur');
+      else navigate('/dashboard');
+    } catch {
+      authErrors.applyApiErrors({ message: 'Unable to reach Aurelia right now. Please try again.' });
     }
-
-    setUser(data.user);
   };
 
   const handleLogout = () => {
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     setUser(null);
+    setReservations([]);
   };
 
   return (
@@ -119,8 +165,13 @@ function App() {
         <Route path="/" element={<HomePage fleet={fleet} airports={airports} />} />
         <Route path="/fleet" element={<FleetPage fleet={fleet} />} />
         <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} user={user} onBookingSuccess={() => fetchReservations(user)} />} />
-        <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={setAuthMode} authForm={authForm} setAuthForm={setAuthForm} onSubmit={handleAuthSubmit} />} />
-        <Route path="/dashboard" element={<CustomerDashboardPage user={user} reservations={reservations} />} />
+        <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={(mode) => { setAuthMode(mode); authErrors.clearErrors(); }} authForm={authForm} setAuthForm={setAuthForm} errors={authErrors.errors} onFieldChange={(field, value) => {
+          setAuthForm((current) => ({ ...current, [field]: value }));
+          if (field === 'name') authErrors.revalidateField('name', value, (next) => (!String(next).trim() ? 'Enter your full name.' : ''));
+          if (field === 'email') authErrors.revalidateField('email', value, (next) => (!String(next).trim() ? 'Enter your email address.' : (!isValidEmail(next) ? 'Enter a valid email address.' : '')));
+          if (field === 'password') authErrors.revalidateField('password', value, (next) => (!next ? (authMode === 'login' ? 'Enter your password.' : 'Create a password.') : (authMode === 'register' && next.length < 8 ? 'Use at least 8 characters for your password.' : '')));
+        }} onSubmit={handleAuthSubmit} />} />
+        <Route path="/dashboard" element={<CustomerDashboardPage user={user} reservations={reservations} reservationsState={reservationsState} onRetry={() => fetchReservations(user)} />} />
         <Route path="/admin" element={<AdminPage metrics={metrics} reservations={reservations} user={user} onMetricsRefresh={() => fetchMetrics(user)} onAssignment={async () => { await fetchReservations(user); await fetchMetrics(user); }} />} />
         <Route path="/partner" element={<PartnerPage user={user} />} />
         <Route path="/partner/join" element={<PartnerJoinPage onJoined={setUser} />} />
@@ -194,34 +245,29 @@ function HomePage({ fleet, airports }) {
             <Link to="/booking" className="btn btn-primary">Book a chauffeur</Link>
             <Link to="/fleet" className="btn btn-secondary">View fleet</Link>
           </div>
-          <div className="hero-metrics">
-            <div><strong>24/7</strong><span>concierge support</span></div>
-            <div><strong>4.9/5</strong><span>guest rating</span></div>
-            <div><strong>15k+</strong><span>rides served</span></div>
-          </div>
         </div>
 
         <div className="hero-panel">
-          <div className="mini-tag">Now booking</div>
+          <div className="mini-tag">Airport transfers</div>
           <div className="route-box">
             <div>
               <span>Pickup</span>
-              <strong>{featuredAirport?.code}</strong>
+              <strong>{featuredAirport?.code || 'EWR'}</strong>
             </div>
             <div className="route-arrow">→</div>
             <div>
               <span>Destination</span>
-              <strong>{featuredVehicle ? 'JFK' : 'NYC'}</strong>
+              <strong>JFK</strong>
             </div>
           </div>
           <div className="trip-summary">
             <div>
-              <span>Estimated</span>
+              <span>From</span>
               <strong>${featuredVehicle?.price || 310}</strong>
             </div>
             <div>
-              <span>Duration</span>
-              <strong>42 mins</strong>
+              <span>Category</span>
+              <strong>{featuredVehicle?.category || 'First Class'}</strong>
             </div>
           </div>
         </div>
@@ -331,13 +377,20 @@ function FleetPage({ fleet }) {
 
 function BookingPage({ airports, fleet, user, onBookingSuccess }) {
   const navigate = useNavigate();
-  const [booking, setBooking] = useState(defaultBooking);
+  const [booking, setBooking] = useState({ ...defaultBooking, date: tomorrowDate(), time: '18:00' });
   const [steps, setSteps] = useState({ current: 1, total: 4 });
   const [submitted, setSubmitted] = useState(false);
   const [reservation, setReservation] = useState(null);
   const [quote, setQuote] = useState(null);
-  const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isQuoting, setIsQuoting] = useState(false);
+  const { errors, clearErrors, applyErrors, applyApiErrors, revalidateField, setFieldError } = useFormErrors();
+
+  const njAirports = useMemo(() => airports.filter((airport) => airport.state === 'NJ'), [airports]);
+  const destinationAirports = useMemo(
+    () => airports.filter((airport) => ['NJ', 'NY', 'PA'].includes(airport.state)),
+    [airports],
+  );
 
   const selectedCategory = useMemo(
     () => fleet.find((item) => item.category === booking.category) || fleet[0],
@@ -351,104 +404,173 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
     return origin.state === 'NJ' && ['NJ', 'NY', 'PA'].includes(destination.state);
   }, [airports, booking.pickup, booking.destination]);
 
-  const handleChange = (event) => {
-    const { name, value } = event.target;
+  const updateBooking = (name, value) => {
     setBooking((current) => ({ ...current, [name]: value }));
     setQuote(null);
+    if (name === 'pickup') {
+      revalidateField('pickup', value, (next) => {
+        const origin = airports.find((airport) => airport.code === next);
+        return !origin || origin.state !== 'NJ' ? 'Pickups must start at an approved New Jersey airport.' : '';
+      });
+    }
+    if (name === 'destination') {
+      revalidateField('destination', value, (next) => {
+        const destination = airports.find((airport) => airport.code === next);
+        return !destination || !['NJ', 'NY', 'PA'].includes(destination.state)
+          ? 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.'
+          : '';
+      });
+    }
+    if (name === 'date' || name === 'time') {
+      const nextDate = name === 'date' ? value : booking.date;
+      const nextTime = name === 'time' ? value : booking.time;
+      revalidateField('date', nextDate, (next) => (!next ? 'Choose a pickup date.' : (!isFuturePickup(next, nextTime) ? 'Pickup must be scheduled in the future.' : '')));
+      revalidateField('time', nextTime, (next) => (!next ? 'Choose a pickup time.' : (!isFuturePickup(nextDate, next) ? 'Choose a pickup time later than now.' : '')));
+    }
+    if (name === 'category') {
+      revalidateField('category', value, (next) => (!next ? 'Select a vehicle category.' : ''));
+    }
+    if (name === 'passengers') {
+      revalidateField('passengers', value, (next) => {
+        const count = Number(next);
+        if (!Number.isInteger(count) || count < 1) return 'Enter at least 1 passenger.';
+        if (selectedCategory && count > selectedCategory.seats) {
+          return `${selectedCategory.category} accommodates up to ${selectedCategory.seats} passengers.`;
+        }
+        return '';
+      });
+    }
+    if (name === 'luggage') {
+      revalidateField('luggage', value, (next) => {
+        const count = Number(next);
+        if (!Number.isInteger(count) || count < 0) return 'Enter a valid luggage count.';
+        if (selectedCategory && count > selectedCategory.luggage) {
+          return `${selectedCategory.category} accommodates up to ${selectedCategory.luggage} bags.`;
+        }
+        return '';
+      });
+    }
+    if (name === 'name') revalidateField('name', value, (next) => (!String(next).trim() ? 'Enter the lead passenger name.' : ''));
+    if (name === 'phone') revalidateField('phone', value, (next) => (!String(next).trim() ? 'Enter a mobile number for day-of coordination.' : ''));
+  };
+
+  const handleChange = (event) => {
+    updateBooking(event.target.name, event.target.value);
+  };
+
+  const validateStep = (step) => {
+    const nextErrors = {};
+    if (step === 1) {
+      const origin = airports.find((airport) => airport.code === booking.pickup);
+      const destination = airports.find((airport) => airport.code === booking.destination);
+      if (!origin || origin.state !== 'NJ') nextErrors.pickup = 'Pickups must start at an approved New Jersey airport.';
+      if (!destination || !['NJ', 'NY', 'PA'].includes(destination.state)) {
+        nextErrors.destination = 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.';
+      }
+      if (!booking.date) nextErrors.date = 'Choose a pickup date.';
+      if (!booking.time) nextErrors.time = 'Choose a pickup time.';
+      if (booking.date && booking.time && !isFuturePickup(booking.date, booking.time)) {
+        nextErrors.date = 'Pickup must be scheduled in the future.';
+        nextErrors.time = 'Choose a pickup time later than now.';
+      }
+      if (!routeAllowed && !nextErrors.pickup && !nextErrors.destination) {
+        nextErrors.pickup = 'This airport-to-airport route is not available under the current service policy.';
+      }
+    }
+    if (step === 2) {
+      if (!selectedCategory) nextErrors.category = 'Select a vehicle category.';
+      const passengers = Number(booking.passengers);
+      const luggage = Number(booking.luggage);
+      if (!Number.isInteger(passengers) || passengers < 1) nextErrors.passengers = 'Enter at least 1 passenger.';
+      else if (selectedCategory && passengers > selectedCategory.seats) {
+        nextErrors.passengers = `${selectedCategory.category} accommodates up to ${selectedCategory.seats} passengers.`;
+      }
+      if (!Number.isInteger(luggage) || luggage < 0) nextErrors.luggage = 'Enter a valid luggage count.';
+      else if (selectedCategory && luggage > selectedCategory.luggage) {
+        nextErrors.luggage = `${selectedCategory.category} accommodates up to ${selectedCategory.luggage} bags.`;
+      }
+    }
+    if (step === 3) {
+      if (!booking.name.trim()) nextErrors.name = 'Enter the lead passenger name.';
+      if (!booking.phone.trim()) nextErrors.phone = 'Enter a mobile number for day-of coordination.';
+      if (!user) nextErrors.form = 'Sign in to continue with passenger details tied to your account.';
+    }
+    return applyErrors(nextErrors, ['pickup', 'destination', 'date', 'time', 'category', 'passengers', 'luggage', 'name', 'phone']);
   };
 
   const handleContinue = async () => {
-    setFormError('');
+    if (!validateStep(steps.current)) return;
 
-    if (steps.current === 1) {
-      const today = new Date().toISOString().slice(0, 10);
-      if (!routeAllowed) {
-        setFormError('This route is not available under the current service policy.');
-        return;
+    if (steps.current === 3) {
+      setIsQuoting(true);
+      try {
+        const response = await fetch('/api/quotes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pickup: booking.pickup,
+            destination: booking.destination,
+            vehicleId: selectedCategory.id,
+            passengers: booking.passengers,
+            luggage: booking.luggage,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          applyApiErrors(data, 'Unable to calculate a quote.');
+          return;
+        }
+        setQuote(data.quote);
+        clearErrors();
+        setSteps((current) => ({ ...current, current: 4 }));
+      } catch {
+        applyApiErrors({ message: 'Unable to reach pricing services. Please try again.' });
+      } finally {
+        setIsQuoting(false);
       }
-      if (!booking.date || booking.date < today || !booking.time) {
-        setFormError('Choose a future pickup date and time.');
-        return;
-      }
-      setSteps((current) => ({ ...current, current: 2 }));
       return;
     }
 
-    if (steps.current === 2) {
-      if (!selectedCategory) {
-        setFormError('Select a vehicle category to continue.');
-        return;
-      }
-      if (Number(booking.passengers) > selectedCategory.seats || Number(booking.luggage) > selectedCategory.luggage) {
-        setFormError(`${selectedCategory.category} accommodates up to ${selectedCategory.seats} passengers and ${selectedCategory.luggage} bags.`);
-        return;
-      }
-      setSteps((current) => ({ ...current, current: 3 }));
-      return;
-    }
-
-    if (!booking.name.trim() || !booking.phone.trim()) {
-      setFormError('Enter the lead passenger name and mobile number.');
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/quotes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pickup: booking.pickup,
-          destination: booking.destination,
-          vehicleId: selectedCategory.id,
-          passengers: booking.passengers,
-          luggage: booking.luggage,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Unable to calculate a quote.');
-      setQuote(data.quote);
-      setSteps((current) => ({ ...current, current: 4 }));
-    } catch (error) {
-      setFormError(error.message);
-    }
+    clearErrors();
+    setSteps((current) => ({ ...current, current: current.current + 1 }));
   };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-
     if (!user) {
       navigate('/login');
       return;
     }
     if (!quote) {
-      setFormError('Refresh the quote before submitting your request.');
+      setFieldError('form', 'Refresh the quote before submitting your request.');
       return;
     }
+    if (isSubmitting) return;
 
     setIsSubmitting(true);
-    setFormError('');
-    const payload = {
-      ...booking,
-      vehicleId: selectedCategory.id,
-      category: selectedCategory.category,
-    };
-
     try {
       const response = await fetch('/api/reservations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...booking,
+          vehicleId: selectedCategory.id,
+          category: selectedCategory.category,
+        }),
       });
-
       const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Unable to submit reservation.');
-
+      if (!response.ok) {
+        applyApiErrors(data, 'Unable to submit reservation.');
+        return;
+      }
       setReservation(data.reservation);
+      setQuote(data.quote || quote);
       setSubmitted(true);
+      clearErrors();
       onBookingSuccess();
-    } catch (error) {
-      setFormError(error.message);
+    } catch {
+      applyApiErrors({ message: 'Network error while submitting. Please try again.' });
     } finally {
       setIsSubmitting(false);
     }
@@ -459,7 +581,8 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
       <div className="booking-form-panel">
         <div className="section-head left">
           <span className="eyebrow">Reserve your journey</span>
-          <h2>Luxury booking experience.</h2>
+          <h2>Airport chauffeur booking.</h2>
+          <p className="panel-copy">Airport-to-airport transfers only. Residential and hotel pickups are not offered in this launch.</p>
         </div>
 
         <div className="booking-progress" aria-label="Reservation steps">
@@ -471,7 +594,10 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
                 key={label}
                 className={`booking-step ${steps.current === step ? 'active' : ''} ${steps.current > step ? 'complete' : ''}`}
                 disabled={step > steps.current}
-                onClick={() => setSteps((current) => ({ ...current, current: step }))}
+                onClick={() => {
+                  clearErrors();
+                  setSteps((current) => ({ ...current, current: step }));
+                }}
               >
                 <span>0{step}</span>{label}
               </button>
@@ -480,56 +606,103 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
         </div>
 
         {!submitted ? (
-          <form className="booking-form" onSubmit={handleSubmit}>
+          <form className="booking-form" onSubmit={handleSubmit} noValidate>
             {steps.current === 1 && (
               <>
                 <div className="field-grid two-col">
-                  <label>
-                    Pickup airport
-                    <select name="pickup" value={booking.pickup} onChange={handleChange}>
-                      {airports.map((airport) => <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>)}
-                    </select>
-                  </label>
-                  <label>
-                    Destination airport
-                    <select name="destination" value={booking.destination} onChange={handleChange}>
-                      {airports.map((airport) => <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>)}
-                    </select>
-                  </label>
+                  <Field name="pickup" label="Pickup airport" error={errors.pickup}>
+                    {(props) => (
+                      <select {...props} value={booking.pickup} onChange={handleChange}>
+                        {njAirports.map((airport) => (
+                          <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </Field>
+                  <Field name="destination" label="Destination airport" error={errors.destination}>
+                    {(props) => (
+                      <select {...props} value={booking.destination} onChange={handleChange}>
+                        {destinationAirports.map((airport) => (
+                          <option key={airport.code} value={airport.code}>{airport.code} — {airport.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </Field>
                 </div>
                 <div className="field-grid two-col">
-                  <label>Pickup date<input type="date" name="date" min={new Date().toISOString().slice(0, 10)} value={booking.date} onChange={handleChange} /></label>
-                  <label>Pickup time<input type="time" name="time" value={booking.time} onChange={handleChange} /></label>
+                  <Field name="date" label="Pickup date" error={errors.date}>
+                    {(props) => (
+                      <input {...props} type="date" min={new Date().toISOString().slice(0, 10)} value={booking.date} onChange={handleChange} />
+                    )}
+                  </Field>
+                  <Field name="time" label="Pickup time" error={errors.time}>
+                    {(props) => (
+                      <input {...props} type="time" value={booking.time} onChange={handleChange} />
+                    )}
+                  </Field>
                 </div>
-                {!routeAllowed && <div className="alert-box">Pickups must start at a New Jersey airport. Destinations must be in New Jersey, New York, or Pennsylvania.</div>}
               </>
             )}
 
             {steps.current === 2 && (
               <>
-                <label>
-                  Vehicle category
-                  <select name="category" value={booking.category} onChange={handleChange}>
-                    {fleet.map((item) => <option key={item.id} value={item.category}>{item.category} · up to {item.seats} passengers</option>)}
-                  </select>
-                </label>
+                <Field name="category" label="Vehicle category" error={errors.category}>
+                  {(props) => (
+                    <select {...props} value={booking.category} onChange={handleChange}>
+                      {fleet.map((item) => (
+                        <option key={item.id} value={item.category}>
+                          {item.category} — {item.description}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </Field>
                 <div className="field-grid two-col">
-                  <label>Passengers<input type="number" name="passengers" value={booking.passengers} min="1" max={selectedCategory?.seats || 8} onChange={handleChange} /></label>
-                  <label>Bags<input type="number" name="luggage" value={booking.luggage} min="0" max={selectedCategory?.luggage || 8} onChange={handleChange} /></label>
+                  <Field name="passengers" label="Passengers" error={errors.passengers}>
+                    {(props) => (
+                      <input {...props} type="number" min="1" max={selectedCategory?.seats || 8} value={booking.passengers} onChange={handleChange} />
+                    )}
+                  </Field>
+                  <Field name="luggage" label="Luggage" error={errors.luggage}>
+                    {(props) => (
+                      <input {...props} type="number" min="0" max={selectedCategory?.luggage || 8} value={booking.luggage} onChange={handleChange} />
+                    )}
+                  </Field>
                 </div>
-                <p className="booking-capacity">{selectedCategory?.description}. {selectedCategory?.seats} seats · {selectedCategory?.luggage} bags.</p>
+                <p className="booking-capacity">{selectedCategory?.description}. Up to {selectedCategory?.seats} passengers · {selectedCategory?.luggage} bags.</p>
               </>
             )}
 
             {steps.current === 3 && (
               <>
                 <div className="field-grid two-col">
-                  <label>Lead passenger<input type="text" name="name" autoComplete="name" value={booking.name} onChange={handleChange} placeholder="Alex Morgan" required /></label>
-                  <label>Mobile number<input type="tel" name="phone" autoComplete="tel" value={booking.phone} onChange={handleChange} placeholder="+1 212 555 0100" required /></label>
+                  <Field name="name" label="Lead passenger" error={errors.name}>
+                    {(props) => (
+                      <input {...props} type="text" autoComplete="name" value={booking.name} onChange={handleChange} placeholder="Alex Morgan" />
+                    )}
+                  </Field>
+                  <Field name="phone" label="Mobile number" error={errors.phone}>
+                    {(props) => (
+                      <input {...props} type="tel" autoComplete="tel" value={booking.phone} onChange={handleChange} placeholder="+1 212 555 0100" />
+                    )}
+                  </Field>
                 </div>
-                <label>Account email<input type="email" value={user?.email || ''} readOnly /></label>
-                <label>Flight number <span className="optional-label">Optional</span><input type="text" name="flightNumber" value={booking.flightNumber} onChange={handleChange} placeholder="AA188" /></label>
-                <label>Special requests <span className="optional-label">Optional</span><textarea name="notes" value={booking.notes} onChange={handleChange} rows="3" placeholder="Child seat, additional stop, accessibility needs..." /></label>
+                <Field name="accountEmail" label="Account email">
+                  {(props) => (
+                    <input {...props} type="email" value={user?.email || ''} readOnly />
+                  )}
+                </Field>
+                {!user && <FormBanner message="Sign in before completing passenger details so the reservation is saved to your account." />}
+                <Field name="flightNumber" label="Flight number" optional error={errors.flightNumber}>
+                  {(props) => (
+                    <input {...props} type="text" value={booking.flightNumber} onChange={handleChange} placeholder="AA188" />
+                  )}
+                </Field>
+                <Field name="notes" label="Special requests" optional error={errors.notes}>
+                  {(props) => (
+                    <textarea {...props} rows="3" value={booking.notes} onChange={handleChange} placeholder="Child seat, additional stop, accessibility needs..." />
+                  )}
+                </Field>
               </>
             )}
 
@@ -540,37 +713,73 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
                   <div><span>Pickup</span><strong>{booking.date} at {booking.time}</strong></div>
                   <div><span>Passenger</span><strong>{booking.name} · {booking.passengers} guests · {booking.luggage} bags</strong></div>
                   <div><span>Vehicle</span><strong>{selectedCategory?.category}</strong></div>
+                  <div><span>Flight</span><strong>{booking.flightNumber || 'Not provided'}</strong></div>
                   <div><span>Contact</span><strong>{user?.email} · {booking.phone}</strong></div>
                 </div>
                 <div className="quote-breakdown" aria-label="Fare breakdown">
-                  <div><span>Ride</span><strong>${quote?.base.toFixed(2)}</strong></div>
-                  <div><span>Service fee</span><strong>${quote?.serviceFee.toFixed(2)}</strong></div>
-                  {quote?.airportSurcharge > 0 && <div><span>Airport surcharge</span><strong>${quote.airportSurcharge.toFixed(2)}</strong></div>}
-                  <div className="quote-total"><span>Total</span><strong>${quote?.total.toFixed(2)}</strong></div>
+                  <div><span>Ride</span><strong>${Number(quote?.base || 0).toFixed(2)}</strong></div>
+                  <div><span>Service fee</span><strong>${Number(quote?.serviceFee || 0).toFixed(2)}</strong></div>
+                  {Number(quote?.airportSurcharge || 0) > 0 && <div><span>Airport surcharge</span><strong>${Number(quote.airportSurcharge).toFixed(2)}</strong></div>}
+                  <div className="quote-total"><span>Total</span><strong>${Number(quote?.total || 0).toFixed(2)}</strong></div>
                 </div>
-                <p className="booking-capacity">Your request will be sent for confirmation. No payment is taken at this step.</p>
+                <p className="booking-capacity">Your request will remain pending confirmation until our concierge team reviews it. No payment is taken at this step.</p>
               </>
             )}
 
-            {formError && <div className="alert-box" role="alert">{formError}</div>}
+            <FormBanner message={errors.form} />
             <div className="booking-actions">
-              {steps.current > 1 && <button type="button" className="btn btn-secondary" onClick={() => { setFormError(''); setSteps((current) => ({ ...current, current: current.current - 1 })); }}>Back</button>}
+              {steps.current > 1 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    clearErrors();
+                    setSteps((current) => ({ ...current, current: current.current - 1 }));
+                  }}
+                >
+                  Back
+                </button>
+              )}
               {steps.current < 4 ? (
-                <button type="button" className="btn btn-primary" onClick={handleContinue}>Continue</button>
+                <button type="button" className="btn btn-primary" disabled={isQuoting} onClick={handleContinue}>
+                  {isQuoting ? 'Preparing quote…' : 'Continue'}
+                </button>
               ) : (
-                <button type="submit" className="btn btn-primary" disabled={isSubmitting}>{isSubmitting ? 'Submitting…' : 'Request reservation'}</button>
+                <button type="submit" className="btn btn-primary" disabled={isSubmitting || !user}>
+                  {isSubmitting ? 'Submitting…' : 'Request reservation'}
+                </button>
               )}
             </div>
           </form>
         ) : (
           <div className="success-box">
-            <span className="eyebrow">Request received</span>
-            <h3>{reservation?.category}</h3>
-            <p>{reservation?.pickup} → {reservation?.destination}</p>
-            <p>{reservation?.date} at {reservation?.time}</p>
-            <p className="status-pill status-pending_confirmation">Pending confirmation</p>
-            <strong>${reservation?.total}</strong>
-            <Link to="/dashboard" className="btn btn-primary">View dashboard</Link>
+            <span className="eyebrow">Reservation received</span>
+            <h3>Thank you, {reservation?.customer_name || booking.name}.</h3>
+            <p className="panel-copy">Your request is awaiting concierge confirmation.</p>
+            <div className="booking-review">
+              <div><span>Reference</span><strong>{shortReference(reservation?.id)}</strong></div>
+              <div><span>Status</span><strong><span className={`status-pill status-${reservation?.status || 'pending_confirmation'}`}>{formatStatus(reservation?.status || 'pending_confirmation')}</span></strong></div>
+              <div><span>Route</span><strong>{reservation?.pickup} → {reservation?.destination}</strong></div>
+              <div><span>Pickup</span><strong>{reservation?.date} at {reservation?.time}</strong></div>
+              <div><span>Vehicle</span><strong>{reservation?.category}</strong></div>
+              <div><span>Quoted total</span><strong>${Number(reservation?.total || reservation?.quote_total || 0).toFixed(2)}</strong></div>
+            </div>
+            <div className="booking-actions">
+              <Link to="/dashboard" className="btn btn-primary">View dashboard</Link>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setSubmitted(false);
+                  setReservation(null);
+                  setQuote(null);
+                  setBooking({ ...defaultBooking, date: tomorrowDate(), time: '18:00' });
+                  setSteps({ current: 1, total: 4 });
+                }}
+              >
+                Book another transfer
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -580,9 +789,9 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
           <span className="eyebrow light">Service details</span>
           <h3>Professional airport chauffeur service</h3>
           <ul>
-            <li>Flight-aware scheduling and airport coordination</li>
-            <li>Discreet, luxury transport for personal and executive travel</li>
-            <li>Transparent pricing and premium support</li>
+            <li>New Jersey airport pickups only</li>
+            <li>Approved destinations across NJ, NYC, and PA</li>
+            <li>Server-quoted pricing before you submit</li>
           </ul>
         </div>
         <div className="side-card">
@@ -599,7 +808,27 @@ function BookingPage({ airports, fleet, user, onBookingSuccess }) {
   );
 }
 
-function CustomerDashboardPage({ user, reservations }) {
+function ReservationCard({ reservation }) {
+  return (
+    <article className="reservation-card">
+      <div className="reservation-card-top">
+        <div>
+          <span className="eyebrow">Reference {shortReference(reservation.id)}</span>
+          <h3>{reservation.category}</h3>
+        </div>
+        <span className={`status-pill status-${reservation.status}`}>{formatStatus(reservation.status)}</span>
+      </div>
+      <div className="reservation-card-grid">
+        <div><span>Route</span><strong>{reservation.pickup} → {reservation.destination}</strong></div>
+        <div><span>Pickup</span><strong>{reservation.date} at {reservation.time}</strong></div>
+        <div><span>Flight</span><strong>{reservation.flight_number || 'Not provided'}</strong></div>
+        <div><span>Quoted total</span><strong>${Number(reservation.total || reservation.quote_total || 0).toFixed(2)}</strong></div>
+      </div>
+    </article>
+  );
+}
+
+function CustomerDashboardPage({ user, reservations, reservationsState, onRetry }) {
   if (!user || user.role !== 'customer') {
     return (
       <main className="page-shell small-shell">
@@ -612,32 +841,59 @@ function CustomerDashboardPage({ user, reservations }) {
     );
   }
 
+  const now = Date.now();
+  const upcoming = reservations.filter((reservation) => {
+    if (['completed', 'cancelled'].includes(reservation.status)) return false;
+    const pickupAt = new Date(`${reservation.date}T${reservation.time || '00:00'}`);
+    return Number.isNaN(pickupAt.getTime()) || pickupAt.getTime() >= now - 60 * 60 * 1000;
+  });
+  const past = reservations.filter((reservation) => !upcoming.includes(reservation));
+
   return (
     <main className="page-shell dashboard-shell">
-      <div className="section-head left">
-        <span className="eyebrow">Customer portal</span>
-        <h2>Welcome back, {user.name.split(' ')[0]}.</h2>
-      </div>
-      <div className="dashboard-grid">
-        <div className="card-panel">
-          <h3>Upcoming reservations</h3>
-          {reservations.slice(0, 3).map((reservation) => (
-            <div className="reservation-row" key={reservation.id}>
-              <strong>{reservation.category}</strong>
-              <span>{reservation.pickup} → {reservation.destination}</span>
-              <small>{reservation.date} • {reservation.status}</small>
-            </div>
-          ))}
+      <section className="dashboard-welcome">
+        <div className="section-head left">
+          <span className="eyebrow">Customer portal</span>
+          <h2>Welcome back, {user.name.split(' ')[0]}.</h2>
+          <p className="panel-copy">Your airport transfers, confirmation status, and reservation references appear here from your live account.</p>
         </div>
+        <Link to="/booking" className="btn btn-primary">Book a transfer</Link>
+      </section>
+
+      {reservationsState === 'loading' && <p className="panel-copy">Loading your reservations…</p>}
+      {reservationsState === 'error' && (
         <div className="card-panel">
-          <h3>Travel preferences</h3>
-          <ul className="simple-list">
-            <li>Preferred vehicle: First Class</li>
-            <li>Quiet cabin preference</li>
-            <li>Airport meet-and-greet on arrival</li>
-          </ul>
+          <p role="alert">We could not load your reservations.</p>
+          <button type="button" className="btn btn-secondary" onClick={onRetry}>Try again</button>
         </div>
-      </div>
+      )}
+
+      {reservationsState === 'ready' && (
+        <div className="dashboard-stack">
+          <section className="card-panel big-panel">
+            <h3>Upcoming reservations</h3>
+            {upcoming.length === 0 ? (
+              <div className="empty-state">
+                <p>No upcoming transfers yet.</p>
+                <Link to="/booking" className="btn btn-secondary small">Reserve your next journey</Link>
+              </div>
+            ) : upcoming.map((reservation) => (
+              <ReservationCard key={reservation.id} reservation={reservation} />
+            ))}
+          </section>
+
+          <section className="card-panel big-panel">
+            <h3>Past reservations</h3>
+            {past.length === 0 ? (
+              <div className="empty-state">
+                <p>Past journeys will appear here after completion.</p>
+              </div>
+            ) : past.map((reservation) => (
+              <ReservationCard key={reservation.id} reservation={reservation} />
+            ))}
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -652,6 +908,7 @@ function AdminPage({ metrics, reservations, user, onAssignment, onMetricsRefresh
   const [partnerNotice, setPartnerNotice] = useState('');
   const [inviteForm, setInviteForm] = useState({ companyName: '', contactEmail: '' });
   const [latestInviteLink, setLatestInviteLink] = useState('');
+  const inviteErrors = useFormErrors();
 
   const refreshOperationalData = async () => {
     const [chauffeurResponse, partnerResponse, vehicleResponse, invitationResponse] = await Promise.all([
@@ -709,6 +966,12 @@ function AdminPage({ metrics, reservations, user, onAssignment, onMetricsRefresh
     event.preventDefault();
     setPartnerNotice('');
     setLatestInviteLink('');
+    const nextErrors = {};
+    if (!inviteForm.companyName.trim()) nextErrors.companyName = 'Enter the transportation company name.';
+    if (!inviteForm.contactEmail.trim()) nextErrors.contactEmail = 'Enter the partner contact email.';
+    else if (!isValidEmail(inviteForm.contactEmail)) nextErrors.contactEmail = 'Enter a valid contact email.';
+    if (!inviteErrors.applyErrors(nextErrors, ['companyName', 'contactEmail'])) return;
+
     const response = await fetch('/api/admin/partners/invite', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -717,9 +980,10 @@ function AdminPage({ metrics, reservations, user, onAssignment, onMetricsRefresh
     });
     const data = await response.json();
     if (!response.ok) {
-      setPartnerNotice(data.message || 'Unable to create invitation.');
+      inviteErrors.applyApiErrors(data, 'Unable to create invitation.');
       return;
     }
+    inviteErrors.clearErrors();
     setPartnerNotice(data.message);
     setLatestInviteLink(data.invitation?.invitePath || '');
     setInviteForm({ companyName: '', contactEmail: '' });
@@ -829,23 +1093,36 @@ function AdminPage({ metrics, reservations, user, onAssignment, onMetricsRefresh
         <div className="card-panel big-panel">
           <h3>Invite transportation partner</h3>
           <p className="panel-copy">Invitations are admin-only, single-use, and expire after seven days. There is no public partner registration.</p>
-          <form className="ops-form" onSubmit={invitePartner}>
-            <label>Company name
-              <input
-                type="text"
-                value={inviteForm.companyName}
-                onChange={(event) => setInviteForm((current) => ({ ...current, companyName: event.target.value }))}
-                required
-              />
-            </label>
-            <label>Contact email
-              <input
-                type="email"
-                value={inviteForm.contactEmail}
-                onChange={(event) => setInviteForm((current) => ({ ...current, contactEmail: event.target.value }))}
-                required
-              />
-            </label>
+          <form className="ops-form" onSubmit={invitePartner} noValidate>
+            <Field name="companyName" label="Company name" error={inviteErrors.errors.companyName}>
+              {(props) => (
+                <input
+                  {...props}
+                  type="text"
+                  value={inviteForm.companyName}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setInviteForm((current) => ({ ...current, companyName: value }));
+                    inviteErrors.revalidateField('companyName', value, (next) => (!String(next).trim() ? 'Enter the transportation company name.' : ''));
+                  }}
+                />
+              )}
+            </Field>
+            <Field name="contactEmail" label="Contact email" error={inviteErrors.errors.contactEmail}>
+              {(props) => (
+                <input
+                  {...props}
+                  type="email"
+                  value={inviteForm.contactEmail}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setInviteForm((current) => ({ ...current, contactEmail: value }));
+                    inviteErrors.revalidateField('contactEmail', value, (next) => (!String(next).trim() ? 'Enter the partner contact email.' : (!isValidEmail(next) ? 'Enter a valid contact email.' : '')));
+                  }}
+                />
+              )}
+            </Field>
+            <FormBanner message={inviteErrors.errors.form} />
             <button type="submit" className="btn btn-primary">Create invitation</button>
           </form>
           {latestInviteLink && (
@@ -964,6 +1241,7 @@ function PartnerJoinPage({ onJoined }) {
   const [form, setForm] = useState({ name: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(Boolean(token));
+  const joinErrors = useFormErrors();
 
   useEffect(() => {
     if (!token) {
@@ -987,6 +1265,12 @@ function PartnerJoinPage({ onJoined }) {
   const acceptInvitation = async (event) => {
     event.preventDefault();
     setError('');
+    const nextErrors = {};
+    if (!form.name.trim()) nextErrors.name = 'Enter your full name.';
+    if (!form.password) nextErrors.password = 'Create a password.';
+    else if (form.password.length < 8) nextErrors.password = 'Use at least 8 characters for your password.';
+    if (!joinErrors.applyErrors(nextErrors, ['name', 'password'])) return;
+
     const response = await fetch('/api/partner/accept-invitation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -995,9 +1279,10 @@ function PartnerJoinPage({ onJoined }) {
     });
     const data = await response.json();
     if (!response.ok) {
-      setError(data.message || 'Unable to create partner account.');
+      joinErrors.applyApiErrors(data, 'Unable to create partner account.');
       return;
     }
+    joinErrors.clearErrors();
     onJoined(data.user);
     navigate('/partner');
   };
@@ -1015,13 +1300,36 @@ function PartnerJoinPage({ onJoined }) {
               You are joining <strong>{invitation.companyName}</strong> with {invitation.contactEmail}.
               Public partner registration is not available.
             </p>
-            <form className="auth-form" onSubmit={acceptInvitation}>
-              <label>Your name
-                <input type="text" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
-              </label>
-              <label>Password
-                <input type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} minLength={8} required />
-              </label>
+            <form className="auth-form" onSubmit={acceptInvitation} noValidate>
+              <Field name="name" label="Your name" error={joinErrors.errors.name}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="text"
+                    value={form.name}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setForm((current) => ({ ...current, name: value }));
+                      joinErrors.revalidateField('name', value, (next) => (!String(next).trim() ? 'Enter your full name.' : ''));
+                    }}
+                  />
+                )}
+              </Field>
+              <Field name="password" label="Password" error={joinErrors.errors.password}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="password"
+                    value={form.password}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setForm((current) => ({ ...current, password: value }));
+                      joinErrors.revalidateField('password', value, (next) => (!next ? 'Create a password.' : (next.length < 8 ? 'Use at least 8 characters for your password.' : '')));
+                    }}
+                  />
+                )}
+              </Field>
+              <FormBanner message={joinErrors.errors.form} />
               <button type="submit" className="btn btn-primary">Activate partner account</button>
             </form>
           </>
@@ -1049,6 +1357,9 @@ function PartnerPage({ user }) {
     seats: 4,
     luggage: 3,
   });
+  const profileErrors = useFormErrors();
+  const chauffeurErrors = useFormErrors();
+  const vehicleErrors = useFormErrors();
 
   const categoryDefaults = {
     'business-class': { makeModel: 'Mercedes E-Class', seats: 4, luggage: 3 },
@@ -1092,6 +1403,9 @@ function PartnerPage({ user }) {
 
   const saveProfile = async (event) => {
     event.preventDefault();
+    const nextErrors = {};
+    if (!profileForm.companyName.trim()) nextErrors.companyName = 'Enter your company name.';
+    if (!profileErrors.applyErrors(nextErrors, ['companyName'])) return;
     const response = await fetch('/api/partner/profile', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -1099,12 +1413,25 @@ function PartnerPage({ user }) {
       body: JSON.stringify(profileForm),
     });
     const data = await response.json();
-    setNotice(response.ok ? data.message : data.message || 'Unable to update profile.');
-    if (response.ok) setProfile(data.partner);
+    if (!response.ok) {
+      profileErrors.applyApiErrors(data, 'Unable to update profile.');
+      return;
+    }
+    profileErrors.clearErrors();
+    setNotice(data.message);
+    setProfile(data.partner);
   };
 
   const addChauffeur = async (event) => {
     event.preventDefault();
+    const nextErrors = {};
+    if (!chauffeurForm.fullName.trim()) nextErrors.fullName = 'Enter the chauffeur full name.';
+    if (!chauffeurForm.email.trim()) nextErrors.email = 'Enter the chauffeur email.';
+    else if (!isValidEmail(chauffeurForm.email)) nextErrors.email = 'Enter a valid email address.';
+    if (!chauffeurForm.password) nextErrors.password = 'Create a temporary password.';
+    else if (chauffeurForm.password.length < 8) nextErrors.password = 'Use at least 8 characters for the temporary password.';
+    if (!chauffeurErrors.applyErrors(nextErrors, ['fullName', 'email', 'password'])) return;
+
     const response = await fetch('/api/partner/chauffeurs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1112,11 +1439,14 @@ function PartnerPage({ user }) {
       body: JSON.stringify(chauffeurForm),
     });
     const data = await response.json();
-    setNotice(response.ok ? data.message : data.message || 'Unable to add chauffeur.');
-    if (response.ok) {
-      setChauffeurForm({ fullName: '', email: '', phone: '', password: '' });
-      await refreshPartnerData();
+    if (!response.ok) {
+      chauffeurErrors.applyApiErrors(data, 'Unable to add chauffeur.');
+      return;
     }
+    chauffeurErrors.clearErrors();
+    setNotice(data.message);
+    setChauffeurForm({ fullName: '', email: '', phone: '', password: '' });
+    await refreshPartnerData();
   };
 
   const updateChauffeurStatus = async (chauffeurId, status) => {
@@ -1133,6 +1463,14 @@ function PartnerPage({ user }) {
 
   const addVehicle = async (event) => {
     event.preventDefault();
+    const nextErrors = {};
+    if (!vehicleForm.makeModel.trim()) nextErrors.makeModel = 'Enter the vehicle make and model.';
+    else if (isBannedVehicleModel(vehicleForm.makeModel)) {
+      nextErrors.makeModel = 'Infiniti QX80 is not an accepted vehicle model. Use Cadillac Escalade or Similar for Luxury SUV.';
+    }
+    if (!vehicleForm.licensePlate.trim()) nextErrors.licensePlate = 'Enter the license plate.';
+    if (!vehicleErrors.applyErrors(nextErrors, ['makeModel', 'licensePlate'])) return;
+
     const response = await fetch('/api/partner/vehicles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1140,20 +1478,23 @@ function PartnerPage({ user }) {
       body: JSON.stringify(vehicleForm),
     });
     const data = await response.json();
-    setNotice(response.ok ? data.message : data.message || 'Unable to add vehicle.');
-    if (response.ok) {
-      const defaults = categoryDefaults[vehicleForm.categorySlug];
-      setVehicleForm({
-        categorySlug: vehicleForm.categorySlug,
-        makeModel: defaults.makeModel,
-        licensePlate: '',
-        color: '',
-        year: '',
-        seats: defaults.seats,
-        luggage: defaults.luggage,
-      });
-      await refreshPartnerData();
+    if (!response.ok) {
+      vehicleErrors.applyApiErrors(data, 'Unable to add vehicle.');
+      return;
     }
+    vehicleErrors.clearErrors();
+    setNotice(data.message);
+    const defaults = categoryDefaults[vehicleForm.categorySlug];
+    setVehicleForm({
+      categorySlug: vehicleForm.categorySlug,
+      makeModel: defaults.makeModel,
+      licensePlate: '',
+      color: '',
+      year: '',
+      seats: defaults.seats,
+      luggage: defaults.luggage,
+    });
+    await refreshPartnerData();
   };
 
   const updateVehicleStatus = async (vehicleId, status) => {
@@ -1199,11 +1540,31 @@ function PartnerPage({ user }) {
       <div className="ops-grid">
         <div className="card-panel big-panel">
           <h3>Company profile</h3>
-          <form className="ops-form" onSubmit={saveProfile}>
-            <label>Company name<input type="text" value={profileForm.companyName} onChange={(event) => setProfileForm((current) => ({ ...current, companyName: event.target.value }))} required /></label>
-            <label>Phone<input type="tel" value={profileForm.phone} onChange={(event) => setProfileForm((current) => ({ ...current, phone: event.target.value }))} /></label>
-            <label>Address<input type="text" value={profileForm.address} onChange={(event) => setProfileForm((current) => ({ ...current, address: event.target.value }))} /></label>
-            <label>Operations notes<textarea rows="3" value={profileForm.notes} onChange={(event) => setProfileForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+          <form className="ops-form" onSubmit={saveProfile} noValidate>
+            <Field name="companyName" label="Company name" error={profileErrors.errors.companyName}>
+              {(props) => (
+                <input
+                  {...props}
+                  type="text"
+                  value={profileForm.companyName}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setProfileForm((current) => ({ ...current, companyName: value }));
+                    profileErrors.revalidateField('companyName', value, (next) => (!String(next).trim() ? 'Enter your company name.' : ''));
+                  }}
+                />
+              )}
+            </Field>
+            <Field name="phone" label="Phone" error={profileErrors.errors.phone}>
+              {(props) => <input {...props} type="tel" value={profileForm.phone} onChange={(event) => setProfileForm((current) => ({ ...current, phone: event.target.value }))} />}
+            </Field>
+            <Field name="address" label="Address" error={profileErrors.errors.address}>
+              {(props) => <input {...props} type="text" value={profileForm.address} onChange={(event) => setProfileForm((current) => ({ ...current, address: event.target.value }))} />}
+            </Field>
+            <Field name="notes" label="Operations notes" optional error={profileErrors.errors.notes}>
+              {(props) => <textarea {...props} rows="3" value={profileForm.notes} onChange={(event) => setProfileForm((current) => ({ ...current, notes: event.target.value }))} />}
+            </Field>
+            <FormBanner message={profileErrors.errors.form} />
             <button type="submit" className="btn btn-primary">Save profile</button>
           </form>
         </div>
@@ -1233,11 +1594,53 @@ function PartnerPage({ user }) {
         <div className="card-panel big-panel">
           <h3>Chauffeur roster</h3>
           {canManageFleet ? (
-            <form className="ops-form" onSubmit={addChauffeur}>
-              <label>Full name<input type="text" value={chauffeurForm.fullName} onChange={(event) => setChauffeurForm((current) => ({ ...current, fullName: event.target.value }))} required /></label>
-              <label>Email<input type="email" value={chauffeurForm.email} onChange={(event) => setChauffeurForm((current) => ({ ...current, email: event.target.value }))} required /></label>
-              <label>Phone<input type="tel" value={chauffeurForm.phone} onChange={(event) => setChauffeurForm((current) => ({ ...current, phone: event.target.value }))} /></label>
-              <label>Temporary password<input type="password" value={chauffeurForm.password} onChange={(event) => setChauffeurForm((current) => ({ ...current, password: event.target.value }))} minLength={8} required /></label>
+            <form className="ops-form" onSubmit={addChauffeur} noValidate>
+              <Field name="fullName" label="Full name" error={chauffeurErrors.errors.fullName}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="text"
+                    value={chauffeurForm.fullName}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setChauffeurForm((current) => ({ ...current, fullName: value }));
+                      chauffeurErrors.revalidateField('fullName', value, (next) => (!String(next).trim() ? 'Enter the chauffeur full name.' : ''));
+                    }}
+                  />
+                )}
+              </Field>
+              <Field name="email" label="Email" error={chauffeurErrors.errors.email}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="email"
+                    value={chauffeurForm.email}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setChauffeurForm((current) => ({ ...current, email: value }));
+                      chauffeurErrors.revalidateField('email', value, (next) => (!String(next).trim() ? 'Enter the chauffeur email.' : (!isValidEmail(next) ? 'Enter a valid email address.' : '')));
+                    }}
+                  />
+                )}
+              </Field>
+              <Field name="phone" label="Phone" optional error={chauffeurErrors.errors.phone}>
+                {(props) => <input {...props} type="tel" value={chauffeurForm.phone} onChange={(event) => setChauffeurForm((current) => ({ ...current, phone: event.target.value }))} />}
+              </Field>
+              <Field name="password" label="Temporary password" error={chauffeurErrors.errors.password}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="password"
+                    value={chauffeurForm.password}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setChauffeurForm((current) => ({ ...current, password: value }));
+                      chauffeurErrors.revalidateField('password', value, (next) => (!next ? 'Create a temporary password.' : (next.length < 8 ? 'Use at least 8 characters for the temporary password.' : '')));
+                    }}
+                  />
+                )}
+              </Field>
+              <FormBanner message={chauffeurErrors.errors.form} />
               <button type="submit" className="btn btn-primary">Add chauffeur</button>
             </form>
           ) : <p className="panel-copy">Fleet management unlocks after administrator activation.</p>}
@@ -1274,31 +1677,70 @@ function PartnerPage({ user }) {
           <h3>Vehicle fleet</h3>
           <p className="panel-copy">Only Business Class, First Class, and Luxury SUV are supported. Infiniti QX80 is not offered.</p>
           {canManageFleet ? (
-            <form className="ops-form" onSubmit={addVehicle}>
-              <label>Category
-                <select
-                  value={vehicleForm.categorySlug}
-                  onChange={(event) => {
-                    const categorySlug = event.target.value;
-                    const defaults = categoryDefaults[categorySlug];
-                    setVehicleForm((current) => ({
-                      ...current,
-                      categorySlug,
-                      makeModel: defaults.makeModel,
-                      seats: defaults.seats,
-                      luggage: defaults.luggage,
-                    }));
-                  }}
-                >
-                  <option value="business-class">Business Class — Mercedes E-Class or Similar</option>
-                  <option value="first-class">First Class — Mercedes S-Class or Similar</option>
-                  <option value="luxury-suv">Luxury SUV — Cadillac Escalade or Similar</option>
-                </select>
-              </label>
-              <label>Make / model<input type="text" value={vehicleForm.makeModel} onChange={(event) => setVehicleForm((current) => ({ ...current, makeModel: event.target.value }))} required /></label>
-              <label>License plate<input type="text" value={vehicleForm.licensePlate} onChange={(event) => setVehicleForm((current) => ({ ...current, licensePlate: event.target.value }))} required /></label>
-              <label>Color<input type="text" value={vehicleForm.color} onChange={(event) => setVehicleForm((current) => ({ ...current, color: event.target.value }))} /></label>
-              <label>Year<input type="number" min="2000" max="2100" value={vehicleForm.year} onChange={(event) => setVehicleForm((current) => ({ ...current, year: event.target.value }))} /></label>
+            <form className="ops-form" onSubmit={addVehicle} noValidate>
+              <Field name="categorySlug" label="Category" error={vehicleErrors.errors.categorySlug}>
+                {(props) => (
+                  <select
+                    {...props}
+                    value={vehicleForm.categorySlug}
+                    onChange={(event) => {
+                      const categorySlug = event.target.value;
+                      const defaults = categoryDefaults[categorySlug];
+                      setVehicleForm((current) => ({
+                        ...current,
+                        categorySlug,
+                        makeModel: defaults.makeModel,
+                        seats: defaults.seats,
+                        luggage: defaults.luggage,
+                      }));
+                      vehicleErrors.setFieldError('makeModel', null);
+                    }}
+                  >
+                    <option value="business-class">Business Class — Mercedes E-Class or Similar</option>
+                    <option value="first-class">First Class — Mercedes S-Class or Similar</option>
+                    <option value="luxury-suv">Luxury SUV — Cadillac Escalade or Similar</option>
+                  </select>
+                )}
+              </Field>
+              <Field name="makeModel" label="Make / model" error={vehicleErrors.errors.makeModel}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="text"
+                    value={vehicleForm.makeModel}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setVehicleForm((current) => ({ ...current, makeModel: value }));
+                      vehicleErrors.revalidateField('makeModel', value, (next) => {
+                        if (!String(next).trim()) return 'Enter the vehicle make and model.';
+                        if (isBannedVehicleModel(next)) return 'Infiniti QX80 is not an accepted vehicle model. Use Cadillac Escalade or Similar for Luxury SUV.';
+                        return '';
+                      });
+                    }}
+                  />
+                )}
+              </Field>
+              <Field name="licensePlate" label="License plate" error={vehicleErrors.errors.licensePlate}>
+                {(props) => (
+                  <input
+                    {...props}
+                    type="text"
+                    value={vehicleForm.licensePlate}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setVehicleForm((current) => ({ ...current, licensePlate: value }));
+                      vehicleErrors.revalidateField('licensePlate', value, (next) => (!String(next).trim() ? 'Enter the license plate.' : ''));
+                    }}
+                  />
+                )}
+              </Field>
+              <Field name="color" label="Color" optional error={vehicleErrors.errors.color}>
+                {(props) => <input {...props} type="text" value={vehicleForm.color} onChange={(event) => setVehicleForm((current) => ({ ...current, color: event.target.value }))} />}
+              </Field>
+              <Field name="year" label="Year" optional error={vehicleErrors.errors.year}>
+                {(props) => <input {...props} type="number" min="2000" max="2100" value={vehicleForm.year} onChange={(event) => setVehicleForm((current) => ({ ...current, year: event.target.value }))} />}
+              </Field>
+              <FormBanner message={vehicleErrors.errors.form} />
               <button type="submit" className="btn btn-primary">Add vehicle</button>
             </form>
           ) : <p className="panel-copy">Vehicle registration unlocks after administrator activation.</p>}
@@ -1419,33 +1861,39 @@ function ChauffeurPage({ user }) {
   );
 }
 
-function AuthPage({ authMode, setAuthMode, authForm, setAuthForm, onSubmit }) {
+function AuthPage({ authMode, setAuthMode, authForm, onFieldChange, errors, onSubmit }) {
   return (
     <main className="page-shell auth-shell">
-      <div className="auth-card">
+      <div className="auth-card card-panel">
+        <span className="eyebrow">Member access</span>
+        <h2>{authMode === 'login' ? 'Welcome back.' : 'Create your account.'}</h2>
         <div className="auth-tabs">
           <button type="button" className={authMode === 'login' ? 'tab active' : 'tab'} onClick={() => setAuthMode('login')}>Login</button>
           <button type="button" className={authMode === 'register' ? 'tab active' : 'tab'} onClick={() => setAuthMode('register')}>Register</button>
         </div>
 
-        <form onSubmit={onSubmit} className="auth-form">
+        <form onSubmit={onSubmit} className="auth-form" noValidate>
           {authMode === 'register' && (
-            <label>
-              Full name
-              <input type="text" value={authForm.name} onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })} placeholder="Alex Morgan" />
-            </label>
+            <Field name="name" label="Full name" error={errors.name}>
+              {(props) => (
+                <input {...props} type="text" value={authForm.name} onChange={(event) => onFieldChange('name', event.target.value)} placeholder="Alex Morgan" autoComplete="name" />
+              )}
+            </Field>
           )}
 
-          <label>
-            Email address
-            <input type="email" value={authForm.email} onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })} placeholder="you@aurelia.com" />
-          </label>
+          <Field name="email" label="Email address" error={errors.email}>
+            {(props) => (
+              <input {...props} type="email" value={authForm.email} onChange={(event) => onFieldChange('email', event.target.value)} placeholder="you@aurelia.com" autoComplete="email" />
+            )}
+          </Field>
 
-          <label>
-            Password
-            <input type="password" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} />
-          </label>
+          <Field name="password" label="Password" error={errors.password}>
+            {(props) => (
+              <input {...props} type="password" value={authForm.password} onChange={(event) => onFieldChange('password', event.target.value)} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} />
+            )}
+          </Field>
 
+          <FormBanner message={errors.form} />
           <button type="submit" className="btn btn-primary full-width">{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
         </form>
       </div>
@@ -1454,16 +1902,65 @@ function AuthPage({ authMode, setAuthMode, authForm, setAuthForm, onSubmit }) {
 }
 
 function ContactPage() {
+  const [form, setForm] = useState({ name: '', email: '', message: '' });
+  const [sent, setSent] = useState(false);
+  const { errors, clearErrors, applyErrors, revalidateField } = useFormErrors();
+
+  const onChange = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    if (field === 'name') revalidateField('name', value, (next) => (!String(next).trim() ? 'Enter your name.' : ''));
+    if (field === 'email') revalidateField('email', value, (next) => (!String(next).trim() ? 'Enter your email address.' : (!isValidEmail(next) ? 'Enter a valid email address.' : '')));
+    if (field === 'message') revalidateField('message', value, (next) => (!String(next).trim() ? 'Tell us how we can help.' : (String(next).trim().length < 10 ? 'Please include a bit more detail.' : '')));
+  };
+
+  const onSubmit = (event) => {
+    event.preventDefault();
+    const nextErrors = {};
+    if (!form.name.trim()) nextErrors.name = 'Enter your name.';
+    if (!form.email.trim()) nextErrors.email = 'Enter your email address.';
+    else if (!isValidEmail(form.email)) nextErrors.email = 'Enter a valid email address.';
+    if (!form.message.trim()) nextErrors.message = 'Tell us how we can help.';
+    else if (form.message.trim().length < 10) nextErrors.message = 'Please include a bit more detail.';
+    if (!applyErrors(nextErrors, ['name', 'email', 'message'])) return;
+    clearErrors();
+    setSent(true);
+  };
+
   return (
     <main className="page-shell small-shell">
       <div className="section-head left">
         <span className="eyebrow">Contact</span>
         <h2>Concierge support for every route.</h2>
       </div>
-      <div className="contact-panel card-panel">
-        <p>Email: concierge@aureliachauffeur.com</p>
-        <p>Phone: +1 (212) 555-0188</p>
-        <p>Hours: 24/7 for reservation and operational support</p>
+      <div className="contact-layout">
+        <div className="contact-panel card-panel">
+          <p>Email: concierge@aureliachauffeur.com</p>
+          <p>Phone: +1 (212) 555-0188</p>
+          <p>Hours: 24/7 for reservation and operational support</p>
+        </div>
+        <div className="card-panel">
+          {sent ? (
+            <div className="success-box compact">
+              <span className="eyebrow">Message received</span>
+              <h3>Thank you, {form.name}.</h3>
+              <p>Our concierge team will respond shortly.</p>
+            </div>
+          ) : (
+            <form className="ops-form" onSubmit={onSubmit} noValidate>
+              <Field name="name" label="Your name" error={errors.name}>
+                {(props) => <input {...props} type="text" value={form.name} onChange={(event) => onChange('name', event.target.value)} />}
+              </Field>
+              <Field name="email" label="Email" error={errors.email}>
+                {(props) => <input {...props} type="email" value={form.email} onChange={(event) => onChange('email', event.target.value)} />}
+              </Field>
+              <Field name="message" label="How can we help?" error={errors.message}>
+                {(props) => <textarea {...props} rows="4" value={form.message} onChange={(event) => onChange('message', event.target.value)} />}
+              </Field>
+              <FormBanner message={errors.form} />
+              <button type="submit" className="btn btn-primary">Send message</button>
+            </form>
+          )}
+        </div>
       </div>
     </main>
   );

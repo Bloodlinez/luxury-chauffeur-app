@@ -13,12 +13,31 @@ test('forbidden route is rejected under launch geography policy', async () => {
       destination: 'LGA',
       date: '2026-12-20',
       time: '18:00',
+      phone: '+1-555-0199',
       vehicleCategory: 'Business Class',
       email: 'blocked@example.com',
     });
 
   assert.equal(response.status, 400);
   assert.match(String(response.body.message), /not available|launch policy/i);
+  assert.ok(response.body.errors.pickup || response.body.errors.destination);
+});
+
+test('auth and reservation validation return field-level errors', async () => {
+  const login = await request(app)
+    .post('/api/auth/login')
+    .send({ email: '', password: '' });
+  assert.equal(login.status, 400);
+  assert.equal(login.body.errors.email, 'Enter the email associated with your account.');
+  assert.equal(login.body.errors.password, 'Enter your password.');
+
+  const register = await request(app)
+    .post('/api/auth/register')
+    .send({ name: '', email: 'bad', password: 'short' });
+  assert.equal(register.status, 400);
+  assert.ok(register.body.errors.name);
+  assert.ok(register.body.errors.email);
+  assert.ok(register.body.errors.password);
 });
 
 test('admin data is not available without an authenticated admin session', async () => {
@@ -79,6 +98,7 @@ test('secure registration and server-generated quote produce pending confirmatio
       destination: 'JFK',
       date: '2026-12-21',
       time: '18:30',
+      phone: '+1-555-0100',
       email: register.body.user.email,
       vehicleCategory: 'First Class',
       total: 1,

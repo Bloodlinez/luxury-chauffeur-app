@@ -123,8 +123,18 @@ before(async () => {
 });
 
 after(async () => {
-  if (databasePool) await databasePool.end();
-  if (postgres) await postgres.stop();
+  if (databasePool) {
+    await Promise.race([
+      databasePool.end(),
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]);
+  }
+  if (postgres) {
+    await Promise.race([
+      postgres.stop(),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
+  }
 });
 
 test('PostgreSQL migrations are tracked and safe to rerun', async () => {
@@ -149,6 +159,23 @@ test('PostgreSQL persists customer bookings and atomic chauffeur assignment', as
     .post('/api/quotes')
     .send({ pickup: 'EWR', destination: 'JFK', vehicleId: 'first-class', passengers: 2, luggage: 2 });
   assert.equal(quote.status, 200);
+
+  const pastPickup = await request(app)
+    .post('/api/reservations')
+    .set('Cookie', customerCookie)
+    .send({
+      name: 'Database Passenger',
+      pickup: 'EWR',
+      destination: 'JFK',
+      date: '2020-01-01',
+      time: '09:00',
+      vehicleCategory: 'First Class',
+      passengers: 2,
+      luggage: 2,
+      phone: '+1-555-0142',
+    });
+  assert.equal(pastPickup.status, 400);
+  assert.ok(pastPickup.body.errors.date);
 
   const created = await request(app)
     .post('/api/reservations')
@@ -337,6 +364,17 @@ test('admin partner invitations create single-use accounts and scoped fleet reco
       licensePlate: 'NJ-QX-800',
     });
   assert.equal(rejectedCategory.status, 400);
+
+  const rejectedModel = await request(app)
+    .post('/api/partner/vehicles')
+    .set('Cookie', newPartnerCookie)
+    .send({
+      categorySlug: 'luxury-suv',
+      makeModel: 'Infiniti QX80',
+      licensePlate: 'NJ-QX-801',
+    });
+  assert.equal(rejectedModel.status, 400);
+  assert.match(String(rejectedModel.body.errors.makeModel), /Infiniti QX80/i);
 
   const chauffeur = await request(app)
     .post('/api/partner/chauffeurs')

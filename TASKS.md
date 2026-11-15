@@ -12,8 +12,9 @@
 ## Phase 2 - Product completion
 - [ ] Replace static marketing pages with a luxury editorial sales site
 - [ ] Complete legal and service page content admin configuration
-- [ ] Build complete customer account and dashboard workflows
-- [ ] Implement multi-step reservation flow with real server quotes and statuses
+- [x] Build complete customer account and dashboard workflows
+- [x] Implement multi-step reservation flow with real server quotes and statuses
+- [x] Add inline field-level form validation across customer, partner, and admin forms
 - [x] Build database-backed partner and chauffeur trip portals with status transitions
 - [x] Add transactional admin chauffeur assignment to persisted reservations
 - [x] Add partner invitations, partner roster, and vehicle/fleet management
@@ -25,6 +26,6 @@
 ## Phase 3 - Quality and deployment
 - [x] Run frontend build and backend tests for implemented security and dispatch flows
 - [x] Test partner invitation, partner fleet isolation, and admin partner controls
-- [ ] Test remaining customer account and payment workflows
+- [x] Test remaining customer account and booking validation workflows
 - [ ] Add deployment configuration for preview and production hosting
 - [ ] Verify no secrets or credential material are committed

@@ -12,7 +12,9 @@ A luxury chauffeur booking application with a React/Vite client and an Express A
 - Server-generated reservation quotes; checkout amounts are read from the reservation
 - PostgreSQL schema and idempotent seed data in `server/migrations`
 
-Partner onboarding is invitation-only: administrators issue expiring single-use tokens, invited companies create partner accounts, and admins approve, activate, or suspend partners. Active partners manage company profiles plus chauffeur and vehicle records for the three customer-facing categories (Business Class, First Class, Luxury SUV). Partner and chauffeur trip portals use database-backed assignments and status transitions. Payment completion, notifications, flight monitoring, and full customer account workflows are still incomplete. The application is not production-ready until those workflows and deployment checks are completed.
+Customers can complete a multi-step airport booking flow with server-generated quotes, future pickup validation, and a reservation-received confirmation that preserves pending status. The customer dashboard shows live upcoming and past reservations from PostgreSQL. Forms across login, booking, contact, partner onboarding, and fleet management use red inline field validation instead of browser alerts.
+
+Partner onboarding is invitation-only: administrators issue expiring single-use tokens, invited companies create partner accounts, and admins approve, activate, or suspend partners. Active partners manage company profiles plus chauffeur and vehicle records for the three customer-facing categories (Business Class, First Class, Luxury SUV). Infiniti QX80 is rejected as a vehicle model. Partner and chauffeur trip portals use database-backed assignments and status transitions. Payment completion, notifications, flight monitoring, and production deployment are still incomplete. The application is not production-ready until those workflows and deployment checks are completed.
 
 ## Local setup
 

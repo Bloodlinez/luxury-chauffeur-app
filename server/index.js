@@ -319,12 +319,33 @@ function getRideCounts(payload, category) {
   const passengers = Number(payload.passengers ?? 1);
   const luggage = Number(payload.luggage ?? 0);
   if (!Number.isInteger(passengers) || passengers < 1 || passengers > category.seats) {
-    return { error: `This vehicle accommodates 1 to ${category.seats} passengers.` };
+    return {
+      error: `This vehicle accommodates 1 to ${category.seats} passengers.`,
+      field: 'passengers',
+    };
   }
   if (!Number.isInteger(luggage) || luggage < 0 || luggage > category.luggage) {
-    return { error: `This vehicle accommodates up to ${category.luggage} bags.` };
+    return {
+      error: `This vehicle accommodates up to ${category.luggage} bags.`,
+      field: 'luggage',
+    };
   }
   return { passengers, luggage };
+}
+
+function isBannedVehicleModel(value) {
+  return /infiniti\s*qx\s*80/i.test(String(value || ''));
+}
+
+function isFuturePickup(date, time) {
+  if (!date || !time) return false;
+  const pickupAt = new Date(`${date}T${time}`);
+  if (Number.isNaN(pickupAt.getTime())) return false;
+  return pickupAt.getTime() > Date.now();
+}
+
+function validationError(res, message, errors = {}) {
+  return res.status(400).json({ message, errors });
 }
 
 async function authenticateRequest(req) {
@@ -651,17 +672,23 @@ app.get('/api/admin/overview', requireAuth, requireRole('admin'), async (req, re
 
 app.post('/api/auth/login', authRateLimit, async (req, res) => {
   const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required.' });
+  const errors = {};
+  if (!String(email || '').trim()) errors.email = 'Enter the email associated with your account.';
+  else if (!isValidEmail(normalizeEmail(email))) errors.email = 'Enter a valid email address.';
+  if (!password) errors.password = 'Enter your password.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Please correct the highlighted fields.', errors);
   }
 
-  const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedEmail = normalizeEmail(email);
   const user = await findUserByEmail(normalizedEmail);
   const passwordHash = user?.password_hash || user?.passwordHash;
 
   if (!user || user.is_active === false || !(await bcrypt.compare(String(password), passwordHash))) {
-    return res.status(401).json({ message: 'Invalid email or password.' });
+    return res.status(401).json({
+      message: 'Invalid email or password.',
+      errors: { password: 'Invalid email or password.' },
+    });
   }
 
   const safeUser = sanitizeUser(user);
@@ -671,15 +698,23 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
 
 app.post('/api/auth/register', authRateLimit, async (req, res) => {
   const { name, email, password } = req.body;
-
-  if (!name || !email || !password || String(password).length < 8) {
-    return res.status(400).json({ message: 'Name, email, and a password with at least 8 characters are required.' });
+  const errors = {};
+  if (!String(name || '').trim()) errors.name = 'Enter your full name.';
+  if (!String(email || '').trim()) errors.email = 'Enter your email address.';
+  else if (!isValidEmail(normalizeEmail(email))) errors.email = 'Enter a valid email address.';
+  if (!password) errors.password = 'Create a password.';
+  else if (String(password).length < 8) errors.password = 'Use at least 8 characters for your password.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Please correct the highlighted fields.', errors);
   }
 
-  const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedEmail = normalizeEmail(email);
   const existing = await findUserByEmail(normalizedEmail);
   if (existing) {
-    return res.status(409).json({ message: 'An account with this email already exists.' });
+    return res.status(409).json({
+      message: 'An account with this email already exists.',
+      errors: { email: 'An account with this email already exists.' },
+    });
   }
 
   const passwordHash = await bcrypt.hash(String(password), 12);
@@ -722,18 +757,30 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.post('/api/quotes', async (req, res) => {
   const { pickup, destination, vehicleId, category: categoryName } = req.body || {};
-  if (!pickup || !destination) {
-    return res.status(400).json({ message: 'Pickup and destination are required.' });
+  const errors = {};
+  if (!pickup) errors.pickup = 'Select a New Jersey pickup airport.';
+  if (!destination) errors.destination = 'Select an approved destination airport.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Pickup and destination are required.', errors);
   }
   if (!await validAirportRoute(pickup, destination)) {
-    return res.status(400).json({ message: 'This route is not available under the current launch policy.' });
+    return validationError(res, 'This route is not available under the current launch policy.', {
+      pickup: 'Pickups must start at an approved New Jersey airport.',
+      destination: 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.',
+    });
   }
 
   const fleetEntries = await listFleet();
   const category = fleetEntries.find((item) => item.id === vehicleId || item.category === categoryName);
-  if (!category) return res.status(400).json({ message: 'Select a valid vehicle category.' });
+  if (!category) {
+    return validationError(res, 'Select a valid vehicle category.', {
+      category: 'Choose Business Class, First Class, or Luxury SUV.',
+    });
+  }
   const rideCounts = getRideCounts(req.body, category);
-  if (rideCounts.error) return res.status(400).json({ message: rideCounts.error });
+  if (rideCounts.error) {
+    return validationError(res, rideCounts.error, { [rideCounts.field]: rideCounts.error });
+  }
 
   const quote = getPaymentQuote(category, { pickup, destination });
   res.json({ category: category.category, passengers: rideCounts.passengers, luggage: rideCounts.luggage, quote });
@@ -741,17 +788,34 @@ app.post('/api/quotes', async (req, res) => {
 
 app.post('/api/reservations', async (req, res) => {
   const payload = req.body || {};
-  const requiredFields = ['pickup', 'destination', 'date', 'time', 'name'];
+  const errors = {};
+  if (!payload.pickup) errors.pickup = 'Select a New Jersey pickup airport.';
+  if (!payload.destination) errors.destination = 'Select an approved destination airport.';
+  if (!payload.date) errors.date = 'Choose a pickup date.';
+  if (!payload.time) errors.time = 'Choose a pickup time.';
+  if (!String(payload.name || '').trim()) errors.name = 'Enter the lead passenger name.';
+  if (!String(payload.phone || '').trim()) errors.phone = 'Enter a mobile number for day-of coordination.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Please complete the required booking details.', errors);
+  }
 
-  if (requiredFields.some((field) => !payload[field])) {
-    return res.status(400).json({ message: 'Pickup, destination, date, time, and traveler name are required.' });
+  if (!isFuturePickup(payload.date, payload.time)) {
+    return validationError(res, 'Choose a future pickup date and time.', {
+      date: 'Pickup must be scheduled in the future.',
+      time: 'Choose a pickup time later than now.',
+    });
   }
 
   const isValidRoute = await validAirportRoute(payload.pickup, payload.destination);
   if (!isValidRoute) {
-    return res.status(400).json({
-      message: 'This route is not available under the current launch policy. Pickup must be a New Jersey airport and destination must be an approved airport in New Jersey, New York, or Pennsylvania.',
-    });
+    return validationError(
+      res,
+      'This route is not available under the current launch policy. Pickup must be a New Jersey airport and destination must be an approved airport in New Jersey, New York, or Pennsylvania.',
+      {
+        pickup: 'Pickups must start at an approved New Jersey airport.',
+        destination: 'Destinations must be approved airports in New Jersey, New York, or Pennsylvania.',
+      },
+    );
   }
 
   req.user = await authenticateRequest(req);
@@ -760,9 +824,15 @@ app.post('/api/reservations', async (req, res) => {
   const categoryName = payload.vehicleCategory || payload.category || 'Business Class';
   const fleetEntries = await listFleet();
   const fleetEntry = fleetEntries.find((item) => item.category === categoryName || item.id === payload.vehicleId);
-  if (!fleetEntry) return res.status(400).json({ message: 'Select a valid vehicle category.' });
+  if (!fleetEntry) {
+    return validationError(res, 'Select a valid vehicle category.', {
+      category: 'Choose Business Class, First Class, or Luxury SUV.',
+    });
+  }
   const rideCounts = getRideCounts(payload, fleetEntry);
-  if (rideCounts.error) return res.status(400).json({ message: rideCounts.error });
+  if (rideCounts.error) {
+    return validationError(res, rideCounts.error, { [rideCounts.field]: rideCounts.error });
+  }
   const quote = getPaymentQuote(fleetEntry, payload);
 
   const reservation = {
@@ -955,13 +1025,20 @@ app.post('/api/admin/partners/invite', requireAuth, requireRole('admin'), async 
 
   const companyName = String(req.body?.companyName || '').trim();
   const contactEmail = normalizeEmail(req.body?.contactEmail || req.body?.email);
-  if (!companyName || !isValidEmail(contactEmail)) {
-    return res.status(400).json({ message: 'Company name and a valid contact email are required.' });
+  const errors = {};
+  if (!companyName) errors.companyName = 'Enter the transportation company name.';
+  if (!contactEmail) errors.contactEmail = 'Enter the partner contact email.';
+  else if (!isValidEmail(contactEmail)) errors.contactEmail = 'Enter a valid contact email.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Company name and a valid contact email are required.', errors);
   }
 
   const existingUser = await findUserByEmail(contactEmail);
   if (existingUser) {
-    return res.status(409).json({ message: 'An account with this email already exists.' });
+    return res.status(409).json({
+      message: 'An account with this email already exists.',
+      errors: { contactEmail: 'An account with this email already exists.' },
+    });
   }
 
   const openInvite = await pool.query(
@@ -970,7 +1047,10 @@ app.post('/api/admin/partners/invite', requireAuth, requireRole('admin'), async 
     [contactEmail],
   );
   if (openInvite.rowCount) {
-    return res.status(409).json({ message: 'An open invitation already exists for this email.' });
+    return res.status(409).json({
+      message: 'An open invitation already exists for this email.',
+      errors: { contactEmail: 'An open invitation already exists for this email.' },
+    });
   }
 
   const token = createInvitationToken();
@@ -1058,8 +1138,13 @@ app.post('/api/partner/accept-invitation', authRateLimit, async (req, res) => {
   const token = String(req.body?.token || '').trim();
   const name = String(req.body?.name || '').trim();
   const password = String(req.body?.password || '');
-  if (!token || !name || password.length < 8) {
-    return res.status(400).json({ message: 'Invitation token, name, and a password with at least 8 characters are required.' });
+  const errors = {};
+  if (!token) errors.form = 'Invitation token is missing.';
+  if (!name) errors.name = 'Enter your full name.';
+  if (!password) errors.password = 'Create a password.';
+  else if (password.length < 8) errors.password = 'Use at least 8 characters for your password.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Invitation token, name, and a password with at least 8 characters are required.', errors);
   }
 
   const tokenHash = hashInvitationToken(token);
@@ -1201,12 +1286,23 @@ app.post('/api/partner/chauffeurs', requireAuth, requireRole('partner'), require
   const email = normalizeEmail(req.body?.email);
   const phone = String(req.body?.phone || '').trim();
   const password = String(req.body?.password || '');
-  if (!fullName || !isValidEmail(email) || password.length < 8) {
-    return res.status(400).json({ message: 'Chauffeur name, email, and a password with at least 8 characters are required.' });
+  const errors = {};
+  if (!fullName) errors.fullName = 'Enter the chauffeur full name.';
+  if (!email) errors.email = 'Enter the chauffeur email.';
+  else if (!isValidEmail(email)) errors.email = 'Enter a valid email address.';
+  if (!password) errors.password = 'Create a temporary password.';
+  else if (password.length < 8) errors.password = 'Use at least 8 characters for the temporary password.';
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Chauffeur name, email, and a password with at least 8 characters are required.', errors);
   }
 
   const existing = await findUserByEmail(email);
-  if (existing) return res.status(409).json({ message: 'An account with this email already exists.' });
+  if (existing) {
+    return res.status(409).json({
+      message: 'An account with this email already exists.',
+      errors: { email: 'An account with this email already exists.' },
+    });
+  }
 
   const passwordHash = await bcrypt.hash(password, 12);
   const client = await pool.connect();
@@ -1313,18 +1409,24 @@ app.post('/api/partner/vehicles', requireAuth, requireRole('partner'), requireAc
   const year = req.body?.year === undefined || req.body?.year === '' ? null : Number(req.body.year);
   const seats = Number(req.body?.seats ?? meta.seats);
   const luggage = Number(req.body?.luggage ?? meta.luggage);
+  const errors = {};
 
-  if (!makeModel || !licensePlate) {
-    return res.status(400).json({ message: 'Make/model and license plate are required.' });
+  if (!makeModel) errors.makeModel = 'Enter the vehicle make and model.';
+  else if (isBannedVehicleModel(makeModel)) {
+    errors.makeModel = 'Infiniti QX80 is not an accepted vehicle model. Use Cadillac Escalade or Similar for Luxury SUV.';
   }
+  if (!licensePlate) errors.licensePlate = 'Enter the license plate.';
   if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
-    return res.status(400).json({ message: 'Seats must be an integer between 1 and 8.' });
+    errors.seats = 'Seats must be an integer between 1 and 8.';
   }
   if (!Number.isInteger(luggage) || luggage < 0 || luggage > 12) {
-    return res.status(400).json({ message: 'Luggage capacity must be an integer between 0 and 12.' });
+    errors.luggage = 'Luggage capacity must be an integer between 0 and 12.';
   }
   if (year !== null && (!Number.isInteger(year) || year < 2000 || year > 2100)) {
-    return res.status(400).json({ message: 'Vehicle year is invalid.' });
+    errors.year = 'Enter a valid vehicle year.';
+  }
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Please correct the vehicle details.', errors);
   }
 
   try {
@@ -1348,7 +1450,10 @@ app.post('/api/partner/vehicles', requireAuth, requireRole('partner'), requireAc
     res.status(201).json({ message: 'Vehicle added to your fleet.', vehicle: serializeVehicle(insert.rows[0]) });
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ message: 'A vehicle with this license plate already exists for your company.' });
+      return res.status(409).json({
+        message: 'A vehicle with this license plate already exists for your company.',
+        errors: { licensePlate: 'A vehicle with this license plate already exists for your company.' },
+      });
     }
     throw error;
   }
@@ -1389,18 +1494,24 @@ app.patch('/api/partner/vehicles/:vehicleId', requireAuth, requireRole('partner'
   const seats = Number(req.body?.seats ?? current.seats);
   const luggage = Number(req.body?.luggage ?? current.luggage);
   const notes = req.body?.notes === undefined ? current.notes : String(req.body.notes).trim() || null;
+  const errors = {};
 
-  if (!makeModel || !licensePlate) {
-    return res.status(400).json({ message: 'Make/model and license plate are required.' });
+  if (!makeModel) errors.makeModel = 'Enter the vehicle make and model.';
+  else if (isBannedVehicleModel(makeModel)) {
+    errors.makeModel = 'Infiniti QX80 is not an accepted vehicle model. Use Cadillac Escalade or Similar for Luxury SUV.';
   }
+  if (!licensePlate) errors.licensePlate = 'Enter the license plate.';
   if (!Number.isInteger(seats) || seats < 1 || seats > 8) {
-    return res.status(400).json({ message: 'Seats must be an integer between 1 and 8.' });
+    errors.seats = 'Seats must be an integer between 1 and 8.';
   }
   if (!Number.isInteger(luggage) || luggage < 0 || luggage > 12) {
-    return res.status(400).json({ message: 'Luggage capacity must be an integer between 0 and 12.' });
+    errors.luggage = 'Luggage capacity must be an integer between 0 and 12.';
   }
   if (year !== null && (!Number.isInteger(year) || year < 2000 || year > 2100)) {
-    return res.status(400).json({ message: 'Vehicle year is invalid.' });
+    errors.year = 'Enter a valid vehicle year.';
+  }
+  if (Object.keys(errors).length) {
+    return validationError(res, 'Please correct the vehicle details.', errors);
   }
 
   try {
