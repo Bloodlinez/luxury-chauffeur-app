@@ -35,19 +35,21 @@ function App() {
   const [metrics, setMetrics] = useState(null);
   const [user, setUser] = useState(null);
   const [authMode, setAuthMode] = useState('login');
-  const [authForm, setAuthForm] = useState({ name: '', email: 'customer@aurelia.com', password: 'demo123' });
+  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' });
 
   useEffect(() => {
     fetchAirports();
     fetchFleet();
-    fetchReservations();
-    fetchMetrics();
+    fetch('/api/me', { credentials: 'include' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => setUser(data?.user || null))
+      .catch(() => setUser(null));
   }, []);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('aurelia-user');
-    if (storedUser) setUser(JSON.parse(storedUser));
-  }, []);
+    fetchReservations(user);
+    fetchMetrics(user);
+  }, [user]);
 
   const fetchAirports = async () => {
     const response = await fetch('/api/airports');
@@ -61,16 +63,25 @@ function App() {
     setFleet(data);
   };
 
-  const fetchReservations = async () => {
-    const response = await fetch('/api/reservations');
+  const fetchReservations = async (currentUser) => {
+    if (!currentUser) {
+      setReservations([]);
+      return;
+    }
+    const endpoint = currentUser.role === 'admin' ? '/api/admin/reservations' : '/api/my-reservations';
+    const response = await fetch(endpoint, { credentials: 'include' });
     const data = await response.json();
-    setReservations(data);
+    setReservations(response.ok ? data : []);
   };
 
-  const fetchMetrics = async () => {
-    const response = await fetch('/api/admin/overview');
+  const fetchMetrics = async (currentUser) => {
+    if (currentUser?.role !== 'admin') {
+      setMetrics(null);
+      return;
+    }
+    const response = await fetch('/api/admin/overview', { credentials: 'include' });
     const data = await response.json();
-    setMetrics(data);
+    setMetrics(response.ok ? data : null);
   };
 
   const handleAuthSubmit = async (event) => {
@@ -83,6 +94,7 @@ function App() {
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(payload),
     });
 
@@ -93,16 +105,20 @@ function App() {
     }
 
     setUser(data.user);
-    localStorage.setItem('aurelia-user', JSON.stringify(data.user));
+  };
+
+  const handleLogout = () => {
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    setUser(null);
   };
 
   return (
     <div className="app-shell">
-      <Header user={user} onLogout={() => { setUser(null); localStorage.removeItem('aurelia-user'); }} />
+      <Header user={user} onLogout={handleLogout} />
       <Routes>
         <Route path="/" element={<HomePage fleet={fleet} airports={airports} />} />
         <Route path="/fleet" element={<FleetPage fleet={fleet} />} />
-        <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} onBookingSuccess={fetchReservations} />} />
+        <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} user={user} onBookingSuccess={() => fetchReservations(user)} />} />
         <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={setAuthMode} authForm={authForm} setAuthForm={setAuthForm} onSubmit={handleAuthSubmit} />} />
         <Route path="/dashboard" element={<CustomerDashboardPage user={user} reservations={reservations} />} />
         <Route path="/admin" element={<AdminPage metrics={metrics} reservations={reservations} />} />
@@ -312,7 +328,8 @@ function FleetPage({ fleet }) {
   );
 }
 
-function BookingPage({ airports, fleet, onBookingSuccess }) {
+function BookingPage({ airports, fleet, user, onBookingSuccess }) {
+  const navigate = useNavigate();
   const [booking, setBooking] = useState(defaultBooking);
   const [steps, setSteps] = useState({ current: 1, total: 4 });
   const [submitted, setSubmitted] = useState(false);
@@ -338,6 +355,11 @@ function BookingPage({ airports, fleet, onBookingSuccess }) {
   const handleSubmit = async (event) => {
     event.preventDefault();
 
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+
     if (!routeAllowed) {
       alert('This airport route is not available under the current service policy.');
       return;
@@ -347,13 +369,13 @@ function BookingPage({ airports, fleet, onBookingSuccess }) {
       ...booking,
       vehicleId: selectedCategory.id,
       category: selectedCategory.category,
-      total: selectedCategory.price,
       name: booking.name || 'Guest Traveler',
     };
 
     const response = await fetch('/api/reservations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(payload),
     });
 
