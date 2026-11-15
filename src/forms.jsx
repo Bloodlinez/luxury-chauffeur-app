@@ -319,7 +319,8 @@ function FleetSilhouette({ slug }) {
 }
 
 export function FleetVisual({ slug, name, description, image }) {
-  const [showPlaceholder, setShowPlaceholder] = useState(true);
+  const src = image || (slug ? `/fleet/${slug}.jpg` : null);
+  const [failed, setFailed] = useState(false);
   const identity = FLEET_VISUAL_IDENTITY[slug] || {
     motif: 'Luxury vehicle',
     visualNote: 'Final photography coming soon',
@@ -327,23 +328,21 @@ export function FleetVisual({ slug, name, description, image }) {
   };
 
   useEffect(() => {
-    setShowPlaceholder(true);
-    if (!image) return undefined;
-    const probe = new Image();
-    probe.onload = () => setShowPlaceholder(false);
-    probe.onerror = () => setShowPlaceholder(true);
-    probe.src = image;
-    return () => {
-      probe.onload = null;
-      probe.onerror = null;
-    };
-  }, [image]);
+    setFailed(false);
+  }, [src]);
+
+  const showImage = Boolean(src) && !failed;
 
   return (
     <div className={`fleet-visual fleet-visual-${slug || 'default'} prestige-${identity.prestige}`}>
-      {!showPlaceholder && image ? (
+      {showImage ? (
         <>
-          <img src={image} alt={`${name} — ${description}`} className="fleet-visual-image" />
+          <img
+            src={src}
+            alt={`${name} — ${description}`}
+            className="fleet-visual-image"
+            onError={() => setFailed(true)}
+          />
           <div className="fleet-visual-overlay" />
         </>
       ) : (
