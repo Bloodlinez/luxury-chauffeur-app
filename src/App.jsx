@@ -27,6 +27,8 @@ const airportOptions = [
 
 function App() {
   const [fleet, setFleet] = useState([]);
+  const [fleetState, setFleetState] = useState('loading');
+  const [fleetError, setFleetError] = useState('');
   const [airports, setAirports] = useState(airportOptions);
   const [reservations, setReservations] = useState([]);
   const [reservationsState, setReservationsState] = useState('idle');
@@ -58,9 +60,24 @@ function App() {
   };
 
   const fetchFleet = async () => {
-    const response = await fetch('/api/fleet');
-    const data = await response.json();
-    setFleet(data);
+    setFleetState('loading');
+    setFleetError('');
+    try {
+      const response = await fetch('/api/fleet');
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.message || 'Unable to load the Aurelia fleet catalog.');
+      }
+      if (!Array.isArray(data) || data.length === 0) {
+        throw new Error('The fleet catalog returned no vehicle categories.');
+      }
+      setFleet(data);
+      setFleetState('ready');
+    } catch (error) {
+      setFleet([]);
+      setFleetState('error');
+      setFleetError(error.message || 'Unable to load the Aurelia fleet catalog.');
+    }
   };
 
   const fetchReservations = async (currentUser) => {
@@ -143,8 +160,8 @@ function App() {
     <div className="app-shell">
       <Header user={user} onLogout={handleLogout} />
       <Routes>
-        <Route path="/" element={<HomePage fleet={fleet} />} />
-        <Route path="/fleet" element={<FleetPage fleet={fleet} />} />
+        <Route path="/" element={<HomePage fleet={fleet} fleetState={fleetState} fleetError={fleetError} onRetryFleet={fetchFleet} />} />
+        <Route path="/fleet" element={<FleetPage fleet={fleet} fleetState={fleetState} fleetError={fleetError} onRetry={fetchFleet} />} />
         <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} user={user} onBookingSuccess={() => fetchReservations(user)} />} />
         <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={(mode) => { setAuthMode(mode); authErrors.clearErrors(); }} authForm={authForm} setAuthForm={setAuthForm} errors={authErrors.errors} onFieldChange={(field, value) => {
           setAuthForm((current) => ({ ...current, [field]: value }));
@@ -208,7 +225,23 @@ function Header({ user, onLogout }) {
   );
 }
 
-function HomePage({ fleet }) {
+function FleetStatusPanel({ fleetState, fleetError, onRetry }) {
+  if (fleetState === 'loading') {
+    return <p className="panel-copy fleet-status-copy" role="status">Loading the Aurelia fleet…</p>;
+  }
+  if (fleetState === 'error') {
+    return (
+      <div className="card-panel fleet-status-panel" role="alert">
+        <p>{fleetError || 'Unable to load the Aurelia fleet catalog.'}</p>
+        <p className="panel-copy">The vehicle cards cannot be shown until `/api/fleet` responds successfully.</p>
+        <button type="button" className="btn btn-secondary small" onClick={onRetry}>Try again</button>
+      </div>
+    );
+  }
+  return null;
+}
+
+function HomePage({ fleet, fleetState, fleetError, onRetryFleet }) {
   const processSteps = [
     {
       title: 'Choose your journey',
@@ -292,11 +325,14 @@ function HomePage({ fleet }) {
           <h2>Three refined vehicle categories.</h2>
           <p className="panel-copy">Business Class, First Class, and Luxury SUV — each reserved with the category you select.</p>
         </div>
-        <div className="fleet-grid">
-          {fleet.map((vehicle) => (
-            <FleetCard key={vehicle.id} vehicle={vehicle} />
-          ))}
-        </div>
+        <FleetStatusPanel fleetState={fleetState} fleetError={fleetError} onRetry={onRetryFleet} />
+        {fleetState === 'ready' && (
+          <div className="fleet-grid">
+            {fleet.map((vehicle) => (
+              <FleetCard key={vehicle.id} vehicle={vehicle} />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="process-section">
@@ -318,7 +354,7 @@ function HomePage({ fleet }) {
   );
 }
 
-function FleetPage({ fleet }) {
+function FleetPage({ fleet, fleetState, fleetError, onRetry }) {
   return (
     <main className="page-shell fleet-page">
       <div className="section-head">
@@ -329,11 +365,14 @@ function FleetPage({ fleet }) {
           and Luxury SUV is the Cadillac Escalade. Reserve a category to open booking with that vehicle preselected.
         </p>
       </div>
-      <div className="fleet-list">
-        {fleet.map((vehicle) => (
-          <FleetCard key={vehicle.id} vehicle={vehicle} layout="row" />
-        ))}
-      </div>
+      <FleetStatusPanel fleetState={fleetState} fleetError={fleetError} onRetry={onRetry} />
+      {fleetState === 'ready' && (
+        <div className="fleet-list">
+          {fleet.map((vehicle) => (
+            <FleetCard key={vehicle.id} vehicle={vehicle} layout="row" />
+          ))}
+        </div>
+      )}
     </main>
   );
 }

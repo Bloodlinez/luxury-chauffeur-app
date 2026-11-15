@@ -241,27 +241,33 @@ async function listAirports() {
   return airportCatalog;
 }
 
+function serializeFleetCatalog() {
+  return fleetCatalog.map((entry) => ({ ...entry, price: entry.basePrice, imageReady: true }));
+}
+
 async function listFleet() {
   if (pool) {
     const result = await pool.query('select * from public.fleet_categories where active = true order by base_price asc');
-    return result.rows.map((row) => ({
-      id: row.slug,
-      category: row.name,
-      name: row.name,
-      description: row.description,
-      vehicles: row.vehicles || [],
-      seats: Number(row.seats),
-      luggage: Number(row.luggage),
-      amenities: ['Professional chauffeur', 'Climate control', 'Executive comfort'],
-      image: fleetImagePath(row.slug),
-      imageReady: true,
-      basePrice: Number(row.base_price),
-      price: Number(row.base_price),
-      available: row.active,
-    }));
+    if (result.rows.length > 0) {
+      return result.rows.map((row) => ({
+        id: row.slug,
+        category: row.name,
+        name: row.name,
+        description: row.description,
+        vehicles: row.vehicles || [],
+        seats: Number(row.seats),
+        luggage: Number(row.luggage),
+        amenities: ['Professional chauffeur', 'Climate control', 'Executive comfort'],
+        image: fleetImagePath(row.slug),
+        imageReady: true,
+        basePrice: Number(row.base_price),
+        price: Number(row.base_price),
+        available: row.active,
+      }));
+    }
   }
 
-  return fleetCatalog.map((entry) => ({ ...entry, price: entry.basePrice, imageReady: true }));
+  return serializeFleetCatalog();
 }
 
 async function listReservationsForUser(userId) {
