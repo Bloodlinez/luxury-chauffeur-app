@@ -54,7 +54,7 @@ const ALLOWED_FLEET_CATEGORIES = {
   },
   'first-class': {
     category: 'First Class',
-    description: 'Mercedes S-Class or Similar',
+    description: 'Mercedes-Benz S-Class or Similar',
     defaultMakeModel: 'Mercedes S-Class',
     seats: 4,
     luggage: 3,
@@ -91,7 +91,7 @@ const fleetCatalog = [
     id: 'first-class',
     category: 'First Class',
     name: 'First Class',
-    description: 'Mercedes S-Class or Similar',
+    description: 'Mercedes-Benz S-Class or Similar',
     vehicles: ['Mercedes S-Class', 'BMW 7 Series', 'Audi A8 L'],
     seats: 4,
     luggage: 3,

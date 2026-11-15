@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 export const SERVICE_AREA_STATES = ['NJ', 'NY', 'PA'];
 export const NJ_PICKUP_AIRPORTS = ['EWR', 'TEB', 'ACY', 'TTN'];
@@ -241,8 +242,89 @@ export function QuantityField({
   );
 }
 
+const FLEET_VISUAL_IDENTITY = {
+  'business-class': {
+    motif: 'Executive sedan',
+    visualNote: 'Visual identity: black BMW 5 Series',
+    prestige: 'executive',
+  },
+  'first-class': {
+    motif: 'Flagship luxury sedan',
+    visualNote: 'Visual identity: black Mercedes-Benz S-Class',
+    prestige: 'flagship',
+  },
+  'luxury-suv': {
+    motif: 'Commanding luxury SUV',
+    visualNote: 'Visual identity: black Cadillac Escalade',
+    prestige: 'suv',
+  },
+};
+
+function FleetSilhouette({ slug }) {
+  if (slug === 'luxury-suv') {
+    return (
+      <svg className="fleet-silhouette" viewBox="0 0 320 120" aria-hidden="true">
+        <path
+          d="M28 78c8-18 28-30 52-34l18-12c14-8 30-10 46-8l54 8c18 3 34 10 46 22l18 8c12 2 22 10 26 20v8H28v-12z"
+          fill="currentColor"
+          opacity="0.22"
+        />
+        <path
+          d="M40 86h240M72 86c0-10 8-18 18-18s18 8 18 18M212 86c0-10 8-18 18-18s18 8 18 18"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          opacity="0.55"
+        />
+      </svg>
+    );
+  }
+
+  if (slug === 'first-class') {
+    return (
+      <svg className="fleet-silhouette" viewBox="0 0 320 120" aria-hidden="true">
+        <path
+          d="M24 82c10-10 24-16 40-18l28-22c16-10 36-14 56-12l62 8c22 4 40 14 52 28l22 8c10 2 18 8 22 16v6H24v-14z"
+          fill="currentColor"
+          opacity="0.28"
+        />
+        <path
+          d="M36 90h248M78 90c0-11 9-20 20-20s20 9 20 20M222 90c0-11 9-20 20-20s20 9 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          opacity="0.7"
+        />
+        <path d="M118 52h78" stroke="currentColor" strokeWidth="2" opacity="0.35" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className="fleet-silhouette" viewBox="0 0 320 120" aria-hidden="true">
+      <path
+        d="M36 84c8-8 20-14 34-16l22-16c12-8 28-10 44-8l48 6c16 3 30 11 40 22l20 6c8 2 14 8 18 14v6H36v-14z"
+        fill="currentColor"
+        opacity="0.18"
+      />
+      <path
+        d="M48 90h224M82 90c0-9 7-16 16-16s16 7 16 16M206 90c0-9 7-16 16-16s16 7 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        opacity="0.45"
+      />
+    </svg>
+  );
+}
+
 export function FleetVisual({ slug, name, description, image }) {
   const [showPlaceholder, setShowPlaceholder] = useState(true);
+  const identity = FLEET_VISUAL_IDENTITY[slug] || {
+    motif: 'Luxury vehicle',
+    visualNote: 'Final photography coming soon',
+    prestige: 'default',
+  };
 
   useEffect(() => {
     setShowPlaceholder(true);
@@ -258,16 +340,72 @@ export function FleetVisual({ slug, name, description, image }) {
   }, [image]);
 
   return (
-    <div className={`fleet-visual fleet-visual-${slug || 'default'}`}>
+    <div className={`fleet-visual fleet-visual-${slug || 'default'} prestige-${identity.prestige}`}>
       {!showPlaceholder && image ? (
-        <img src={image} alt={`${name} — ${description}`} className="fleet-visual-image" />
+        <>
+          <img src={image} alt={`${name} — ${description}`} className="fleet-visual-image" />
+          <div className="fleet-visual-overlay" />
+        </>
       ) : (
-        <div className="fleet-placeholder" role="img" aria-label={`${name}: ${description}. Final vehicle photography coming soon.`}>
-          <span className="fleet-placeholder-eyebrow">Aurelia Fleet</span>
-          <strong>{name}</strong>
-          <span>{description}</span>
+        <div
+          className="fleet-placeholder"
+          role="img"
+          aria-label={`${name}: ${description}. ${identity.visualNote}. Final vehicle photography coming soon.`}
+        >
+          <div className="fleet-placeholder-glow" />
+          <FleetSilhouette slug={slug} />
+          <div className="fleet-placeholder-copy">
+            <span className="fleet-placeholder-eyebrow">{identity.motif}</span>
+            <strong>{name}</strong>
+            <span className="fleet-placeholder-subtitle">{description}</span>
+            <em className="fleet-placeholder-identity">{identity.visualNote}</em>
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+export function FleetCard({ vehicle, layout = 'card' }) {
+  const blurb = {
+    'business-class': 'Understated executive travel for polished airport transfers and business itineraries.',
+    'first-class': 'Flagship sedan comfort for guests who expect the most prestigious chauffeur experience.',
+    'luxury-suv': 'Commanding cabin space for premium groups, luggage, and elevated family or executive travel.',
+  }[vehicle.id] || 'Refined chauffeur travel tailored to your airport itinerary.';
+
+  const content = (
+    <>
+      <div className="fleet-head">
+        <div>
+          <h3>{vehicle.name}</h3>
+          <span>{vehicle.description}</span>
+        </div>
+        <strong>${vehicle.price}</strong>
+      </div>
+      <p className="fleet-card-copy">{blurb}</p>
+      <div className="spec-row fleet-spec-row">
+        <span>{vehicle.seats} passengers</span>
+        <span>{vehicle.luggage} luggage</span>
+      </div>
+      <Link className="btn btn-primary small fleet-card-cta" to="/booking">
+        Reserve {vehicle.name}
+      </Link>
+    </>
+  );
+
+  if (layout === 'row') {
+    return (
+      <article className="fleet-row">
+        <FleetVisual slug={vehicle.id} name={vehicle.name} description={vehicle.description} image={vehicle.image} />
+        <div className="fleet-row-body">{content}</div>
+      </article>
+    );
+  }
+
+  return (
+    <article className={`fleet-card fleet-card-${vehicle.id}`}>
+      <FleetVisual slug={vehicle.id} name={vehicle.name} description={vehicle.description} image={vehicle.image} />
+      <div className="fleet-card-body">{content}</div>
+    </article>
   );
 }

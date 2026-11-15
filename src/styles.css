@@ -397,17 +397,33 @@ main {
 }
 
 .fleet-card {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border-radius: 22px;
   border: 1px solid var(--border);
-  background: rgba(20, 22, 26, 0.85);
+  background: rgba(20, 22, 26, 0.92);
+  min-height: 100%;
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.fleet-card:hover,
+.fleet-card:focus-within {
+  transform: translateY(-4px);
+  border-color: rgba(198, 166, 103, 0.4);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.fleet-card-first-class {
+  border-color: rgba(198, 166, 103, 0.28);
 }
 
 .fleet-card img,
 .fleet-visual,
 .fleet-visual-image,
 .fleet-placeholder {
-  height: 220px;
+  aspect-ratio: 16 / 10;
+  height: auto;
   width: 100%;
   object-fit: cover;
 }
@@ -415,45 +431,165 @@ main {
 .fleet-visual {
   position: relative;
   overflow: hidden;
+  color: var(--gold-soft);
+}
+
+.fleet-visual-business-class {
   background:
-    linear-gradient(145deg, rgba(198, 166, 103, 0.18), transparent 42%),
-    linear-gradient(180deg, #15171c 0%, #0b0b0d 100%);
+    radial-gradient(circle at 18% 20%, rgba(180, 190, 205, 0.16), transparent 42%),
+    linear-gradient(160deg, #1a1d24 0%, #0b0b0d 70%);
+}
+
+.fleet-visual-first-class {
+  background:
+    radial-gradient(circle at 78% 18%, rgba(198, 166, 103, 0.28), transparent 40%),
+    linear-gradient(155deg, #201910 0%, #0b0b0d 68%);
+}
+
+.fleet-visual-luxury-suv {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(198, 166, 103, 0.12), transparent 45%),
+    linear-gradient(180deg, #14161b 0%, #08090c 100%);
+}
+
+.fleet-visual-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 40%, rgba(11, 11, 13, 0.72) 100%);
+  pointer-events: none;
 }
 
 .fleet-row .fleet-visual,
 .fleet-row .fleet-placeholder,
 .fleet-row .fleet-visual-image {
   height: 100%;
-  min-height: 220px;
+  min-height: 240px;
+  aspect-ratio: auto;
 }
 
 .fleet-placeholder {
+  position: relative;
   display: grid;
   align-content: end;
-  gap: 6px;
+  gap: 10px;
   padding: 22px;
   box-sizing: border-box;
+  min-height: 100%;
+}
+
+.fleet-placeholder-glow {
+  position: absolute;
+  inset: auto -10% -30% auto;
+  width: 55%;
+  height: 70%;
+  background: radial-gradient(circle, rgba(198, 166, 103, 0.18), transparent 70%);
+  pointer-events: none;
+}
+
+.prestige-flagship .fleet-placeholder-glow {
+  inset: -20% auto auto -10%;
+  width: 60%;
+  height: 75%;
+  background: radial-gradient(circle, rgba(231, 215, 180, 0.22), transparent 68%);
+}
+
+.prestige-suv .fleet-placeholder-glow {
+  inset: auto auto -25% 10%;
+  width: 70%;
+  height: 55%;
+}
+
+.fleet-silhouette {
+  position: absolute;
+  right: 4%;
+  bottom: 18%;
+  width: min(72%, 260px);
+  color: var(--ivory);
+  opacity: 0.9;
+}
+
+.prestige-executive .fleet-silhouette {
+  width: min(58%, 210px);
+  bottom: 24%;
+  opacity: 0.7;
+}
+
+.prestige-flagship .fleet-silhouette {
+  width: min(78%, 280px);
+  color: var(--gold-soft);
+}
+
+.prestige-suv .fleet-silhouette {
+  width: min(80%, 290px);
+  bottom: 14%;
+}
+
+.fleet-placeholder-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 4px;
 }
 
 .fleet-placeholder-eyebrow {
   color: var(--gold-soft);
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
 }
 
 .fleet-placeholder strong {
   font-family: 'Cormorant Garamond', serif;
-  font-size: 2rem;
+  font-size: clamp(1.8rem, 2.4vw, 2.35rem);
   color: var(--ivory);
+  line-height: 1;
 }
 
-.fleet-placeholder span {
+.fleet-placeholder-subtitle {
   color: var(--text-soft);
+  font-size: 0.95rem;
+}
+
+.fleet-placeholder-identity {
+  margin-top: 6px;
+  color: rgba(231, 215, 180, 0.78);
+  font-style: normal;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
 }
 
 .fleet-card-body {
-  padding: 18px 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  padding: 20px 18px 22px;
+}
+
+.fleet-card-copy {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.fleet-spec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.fleet-spec-row span {
+  padding: 0.4rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.fleet-card-cta {
+  margin-top: auto;
+  width: fit-content;
 }
 
 .fleet-head {
@@ -465,16 +601,18 @@ main {
 
 .fleet-head h3 {
   margin: 0;
-  font-size: 2.2rem;
+  font-size: 2.1rem;
 }
 
 .fleet-head span {
+  display: block;
+  margin-top: 4px;
   color: var(--text-soft);
 }
 
 .fleet-head strong {
   color: var(--gold-soft);
-  font-size: 1.4rem;
+  font-size: 1.35rem;
 }
 
 .fleet-card ul,

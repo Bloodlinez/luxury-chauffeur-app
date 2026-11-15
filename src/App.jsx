@@ -3,7 +3,7 @@ import { Link, NavLink, Route, Routes, useNavigate, useSearchParams } from 'reac
 import BookingPage from './BookingPage.jsx';
 import {
   Field,
-  FleetVisual,
+  FleetCard,
   FormBanner,
   formatRoute,
   formatStatus,
@@ -279,26 +279,11 @@ function HomePage({ fleet, airports }) {
         <div className="section-head">
           <span className="eyebrow">Our exclusive fleet</span>
           <h2>Three refined vehicle categories.</h2>
+          <p className="panel-copy">Executive sedan, flagship luxury, and commanding SUV — each with a distinct presence.</p>
         </div>
         <div className="fleet-grid">
           {fleet.map((vehicle) => (
-            <article key={vehicle.id} className="fleet-card">
-              <FleetVisual slug={vehicle.id} name={vehicle.name} description={vehicle.description} image={vehicle.image} />
-              <div className="fleet-card-body">
-                <div className="fleet-head">
-                  <div>
-                    <h3>{vehicle.name}</h3>
-                    <span>{vehicle.description}</span>
-                  </div>
-                  <strong>${vehicle.price}</strong>
-                </div>
-                <ul>
-                  <li>{vehicle.seats} passengers</li>
-                  <li>{vehicle.luggage} luggage</li>
-                  <li>{vehicle.amenities[0]}</li>
-                </ul>
-              </div>
-            </article>
+            <FleetCard key={vehicle.id} vehicle={vehicle} />
           ))}
         </div>
       </section>
@@ -328,28 +313,11 @@ function FleetPage({ fleet }) {
       <div className="section-head">
         <span className="eyebrow">Fleet overview</span>
         <h2>Premium categories for every type of client journey.</h2>
+        <p className="panel-copy">Business Class leads with executive presence, First Class is the flagship sedan, and Luxury SUV delivers spacious prestige.</p>
       </div>
       <div className="fleet-list">
         {fleet.map((vehicle) => (
-          <div className="fleet-row" key={vehicle.id}>
-            <FleetVisual slug={vehicle.id} name={vehicle.name} description={vehicle.description} image={vehicle.image} />
-            <div className="fleet-row-body">
-              <div className="fleet-head">
-                <div>
-                  <h3>{vehicle.name}</h3>
-                  <span>{vehicle.description}</span>
-                </div>
-                <strong>${vehicle.price}</strong>
-              </div>
-              <p>Refined travel experience designed for airport arrivals, executive movements, and premium everyday comfort.</p>
-              <div className="spec-row">
-                <span>{vehicle.seats} passengers</span>
-                <span>{vehicle.luggage} luggage</span>
-                <span>{vehicle.amenities.join(' • ')}</span>
-              </div>
-              <Link to="/booking" className="btn btn-primary small">Reserve this category</Link>
-            </div>
-          </div>
+          <FleetCard key={vehicle.id} vehicle={vehicle} layout="row" />
         ))}
       </div>
     </main>

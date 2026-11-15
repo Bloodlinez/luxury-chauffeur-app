@@ -18,6 +18,7 @@
 - [x] Support From Airport / To Airport transfers with street-address service-area validation
 - [x] Fix dark select menus, passenger/luggage steppers, and capacity enforcement
 - [x] Replace incorrect fleet photography with category placeholders ready for final assets
+- [x] Differentiate Business Class, First Class, and Luxury SUV fleet card presentation
 - [x] Build database-backed partner and chauffeur trip portals with status transitions
 - [x] Add transactional admin chauffeur assignment to persisted reservations
 - [x] Add partner invitations, partner roster, and vehicle/fleet management
