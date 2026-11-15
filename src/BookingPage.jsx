@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  bookingStepForErrors,
   Field,
+  focusFirstInvalid,
   FormBanner,
   formatStatus,
   isFuturePickup,
   NJ_PICKUP_AIRPORTS,
   QuantityField,
+  resolveFleetCategory,
   SERVICE_AREA_STATES,
   shortReference,
   useFormErrors,
@@ -115,6 +118,8 @@ function AddressFields({
 
 export default function BookingPage({ airports, fleet, user, onBookingSuccess }) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const categoryQuery = searchParams.get('category') || searchParams.get('vehicle');
   const [booking, setBooking] = useState({ ...defaultBooking, date: tomorrowDate(), time: '18:00' });
   const [steps, setSteps] = useState({ current: 1, total: 4 });
   const [submitted, setSubmitted] = useState(false);
@@ -144,11 +149,55 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
   const luggageMax = selectedCategory?.luggage || 3;
 
   useEffect(() => {
+    if (!fleet.length) return;
+    const resolved = resolveFleetCategory(categoryQuery, fleet);
+    setBooking((current) => (
+      current.category === resolved ? current : { ...current, category: resolved }
+    ));
+  }, [categoryQuery, fleet]);
+
+  const previousCategoryRef = useRef(booking.category);
+  useEffect(() => {
+    if (previousCategoryRef.current === booking.category) return;
+    previousCategoryRef.current = booking.category;
+    setQuote(null);
+    if (!selectedCategory) return;
+    const passengerError = validateCapacityCount(booking.passengers, {
+      min: 1,
+      max: selectedCategory.seats || 4,
+      label: 'Passengers',
+    });
+    const luggageError = validateCapacityCount(booking.luggage, {
+      min: 0,
+      max: selectedCategory.luggage || 3,
+      label: 'Luggage',
+    });
+    setErrors((current) => {
+      const next = { ...current };
+      if (passengerError) next.passengers = passengerError;
+      else delete next.passengers;
+      if (luggageError) next.luggage = luggageError;
+      else delete next.luggage;
+      return next;
+    });
+  }, [booking.category, booking.passengers, booking.luggage, selectedCategory, setErrors]);
+
+  useEffect(() => {
     fetch('/api/address-suggest?q=')
       .then((response) => response.json())
       .then((data) => setAddressProviderConfigured(Boolean(data.providerConfigured)))
       .catch(() => setAddressProviderConfigured(false));
   }, []);
+
+  const showBookingErrors = (payload, fallbackMessage) => {
+    const next = applyApiErrors(payload, fallbackMessage);
+    const targetStep = bookingStepForErrors(next);
+    if (targetStep) {
+      setSteps((current) => ({ ...current, current: targetStep }));
+      window.setTimeout(() => focusFirstInvalid(next), 0);
+    }
+    return next;
+  };
 
   const requestSuggestions = async (query, target) => {
     if (!query || query.trim().length < 3) {
@@ -312,14 +361,14 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
         });
         const data = await response.json();
         if (!response.ok) {
-          applyApiErrors(data, 'Unable to calculate a quote.');
+          showBookingErrors(data, 'Unable to calculate a quote.');
           return;
         }
         setQuote(data.quote);
         clearErrors();
         setSteps((current) => ({ ...current, current: 4 }));
       } catch {
-        applyApiErrors({ message: 'Unable to reach pricing services. Please try again.' });
+        showBookingErrors({ message: 'Unable to reach pricing services. Please try again.' });
       } finally {
         setIsQuoting(false);
       }
@@ -362,7 +411,7 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
       });
       const data = await response.json();
       if (!response.ok) {
-        applyApiErrors(data, 'Unable to submit reservation.');
+        showBookingErrors(data, 'Unable to submit reservation.');
         return;
       }
       setReservation(data.reservation);
@@ -371,7 +420,7 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
       clearErrors();
       onBookingSuccess();
     } catch {
-      applyApiErrors({ message: 'Network error while submitting. Please try again.' });
+      showBookingErrors({ message: 'Network error while submitting. Please try again.' });
     } finally {
       setIsSubmitting(false);
     }

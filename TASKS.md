@@ -10,7 +10,11 @@
 - [x] Wire frontend requests to protected endpoints using HttpOnly sessions
 
 ## Phase 2 - Product completion
-- [ ] Replace static marketing pages with a luxury editorial sales site
+- [x] Refine homepage into a five-star luxury presentation (header, hero, fleet, process, footer)
+- [x] Align homepage messaging with From Airport / To Airport booking rules
+- [x] Deep-link fleet Reserve buttons to `/booking?category=` with safe Business Class fallback
+- [x] Jump booking validation errors back to the owning step with focused inline field messages
+- [x] Keep contact messaging honest when email delivery is not connected
 - [ ] Complete legal and service page content admin configuration
 - [x] Build complete customer account and dashboard workflows
 - [x] Implement multi-step reservation flow with real server quotes and statuses
@@ -19,6 +23,7 @@
 - [x] Fix dark select menus, passenger/luggage steppers, and capacity enforcement
 - [x] Replace incorrect fleet photography with category placeholders ready for final assets
 - [x] Differentiate Business Class, First Class, and Luxury SUV fleet card presentation
+- [x] Polish homepage and Fleet page card/row layouts for equal height, cropping, and overflow
 - [x] Build database-backed partner and chauffeur trip portals with status transitions
 - [x] Add transactional admin chauffeur assignment to persisted reservations
 - [x] Add partner invitations, partner roster, and vehicle/fleet management
@@ -31,7 +36,7 @@
 - [x] Run frontend build and backend tests for implemented security and dispatch flows
 - [x] Test partner invitation, partner fleet isolation, and admin partner controls
 - [x] Test remaining customer account and booking validation workflows
-- [ ] Add final luxury fleet photography assets under `public/fleet/`
+- [x] Add final luxury fleet photography assets under `public/fleet/`
 - [ ] Configure address autocomplete provider token for live suggestions
 - [ ] Add deployment configuration for preview and production hosting
 - [ ] Verify no secrets or credential material are committed

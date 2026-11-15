@@ -143,7 +143,7 @@ function App() {
     <div className="app-shell">
       <Header user={user} onLogout={handleLogout} />
       <Routes>
-        <Route path="/" element={<HomePage fleet={fleet} airports={airports} />} />
+        <Route path="/" element={<HomePage fleet={fleet} />} />
         <Route path="/fleet" element={<FleetPage fleet={fleet} />} />
         <Route path="/booking" element={<BookingPage airports={airports} fleet={fleet} user={user} onBookingSuccess={() => fetchReservations(user)} />} />
         <Route path="/login" element={<AuthPage authMode={authMode} setAuthMode={(mode) => { setAuthMode(mode); authErrors.clearErrors(); }} authForm={authForm} setAuthForm={setAuthForm} errors={authErrors.errors} onFieldChange={(field, value) => {
@@ -178,15 +178,15 @@ function Header({ user, onLogout }) {
 
   return (
     <header className="topbar">
-      <div className="brand-wrap">
+      <Link to="/" className="brand-wrap" aria-label="Aurelia Chauffeur home">
         <div className="brand-mark">A</div>
         <div>
           <div className="brand-name">Aurelia</div>
           <div className="brand-tag">Chauffeur</div>
         </div>
-      </div>
+      </Link>
 
-      <nav className="nav">
+      <nav className="nav" aria-label="Primary">
         {navItems.map((item) => (
           <NavLink key={item.to} to={item.to} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             {item.label}
@@ -208,69 +208,80 @@ function Header({ user, onLogout }) {
   );
 }
 
-function HomePage({ fleet, airports }) {
-  const featuredAirport = airports.find((airport) => airport.code === 'EWR') || airports[0];
-  const featuredVehicle = fleet.find((item) => item.category === 'First Class') || fleet[0];
+function HomePage({ fleet }) {
+  const processSteps = [
+    {
+      title: 'Choose your journey',
+      copy: 'Select From Airport or To Airport, then provide the approved airport and street address within our service area.',
+    },
+    {
+      title: 'Select your vehicle',
+      copy: 'Reserve Business Class, First Class, or Luxury SUV. Passenger and luggage limits update with your category.',
+    },
+    {
+      title: 'Review your quote',
+      copy: 'Server-generated pricing is confirmed before you submit. Category starting prices are not route-specific fares.',
+    },
+    {
+      title: 'Await confirmation',
+      copy: 'Your request stays Pending Confirmation until concierge review. Travel begins once your reservation is confirmed.',
+    },
+  ];
 
   return (
-    <main>
+    <main className="home-page">
       <section className="hero-section">
         <div className="hero-copy">
-          <span className="eyebrow">Private airport transport</span>
-          <h1>Arrive Beyond Expectations.</h1>
+          <span className="eyebrow">Aurelia Chauffeur</span>
+          <h1>Arrive beyond expectations.</h1>
           <p>
-            Exceptional vehicles. Professional chauffeurs. A journey defined by comfort, privacy,
-            and distinction for every airport transfer across New Jersey and the Northeast.
+            Private airport chauffeur service for New Jersey arrivals and departures —
+            discreet vehicles, composed chauffeurs, and quotes prepared for your exact itinerary.
           </p>
           <div className="hero-actions">
-            <Link to="/booking" className="btn btn-primary">Book a chauffeur</Link>
-            <Link to="/fleet" className="btn btn-secondary">View fleet</Link>
+            <Link to="/booking" className="btn btn-primary hero-cta">Book a Chauffeur</Link>
+            <Link to="/fleet" className="btn btn-secondary">Explore the fleet</Link>
           </div>
         </div>
 
         <div className="hero-panel">
-          <div className="mini-tag">Airport transfers</div>
-          <div className="route-box">
-            <div>
-              <span>Pickup</span>
-              <strong>{featuredAirport?.code || 'EWR'}</strong>
+          <div className="mini-tag">Supported journeys</div>
+          <div className="service-mode-list">
+            <div className="service-mode">
+              <span>From Airport</span>
+              <strong>NJ airport → street address</strong>
+              <p>EWR, TEB, ACY, or TTN to a destination in NJ, NY, or PA.</p>
             </div>
-            <div className="route-arrow">→</div>
-            <div>
-              <span>Destination</span>
-              <strong>JFK</strong>
-            </div>
-          </div>
-          <div className="trip-summary">
-            <div>
-              <span>From</span>
-              <strong>${featuredVehicle?.price || 310}</strong>
-            </div>
-            <div>
-              <span>Category</span>
-              <strong>{featuredVehicle?.category || 'First Class'}</strong>
+            <div className="service-mode">
+              <span>To Airport</span>
+              <strong>Street address → airport</strong>
+              <p>Pickup within our service area to an approved regional airport.</p>
             </div>
           </div>
+          <p className="hero-panel-note">
+            Pricing is quoted for your selected route and vehicle. Starting category rates shown on the fleet are not guaranteed fares.
+          </p>
         </div>
       </section>
 
       <section className="feature-section">
         <div className="section-head">
-          <span className="eyebrow">The luxury experience</span>
-          <h2>Private travel tailored to your schedule.</h2>
+          <span className="eyebrow">The Aurelia standard</span>
+          <h2>Composed service for every transfer.</h2>
+          <p className="panel-copy">Focused on airport chauffeur travel — not general point-to-point rides.</p>
         </div>
         <div className="info-grid">
           <div className="info-card">
-            <h3>Airport transfers</h3>
-            <p>Seamless arrival and departure coordination with punctuality, discretion, and airport-specific assistance.</p>
+            <h3>Airport arrivals</h3>
+            <p>From Airport transfers from approved New Jersey airports to a supported street address, coordinated with your flight details.</p>
           </div>
           <div className="info-card">
-            <h3>Executive travel</h3>
-            <p>Quiet, thoughtful service built for board meetings, client arrivals, and polished business schedules.</p>
+            <h3>Airport departures</h3>
+            <p>To Airport transfers from a supported address to an approved airport, with timing shaped around your departure.</p>
           </div>
           <div className="info-card">
-            <h3>Private aviation</h3>
-            <p>Tailored FBO pickup and arrival experiences designed around your itinerary and comfort preferences.</p>
+            <h3>Concierge review</h3>
+            <p>Every request is reviewed before confirmation. Pending reservations are never presented as already confirmed.</p>
           </div>
         </div>
       </section>
@@ -279,7 +290,7 @@ function HomePage({ fleet, airports }) {
         <div className="section-head">
           <span className="eyebrow">Our exclusive fleet</span>
           <h2>Three refined vehicle categories.</h2>
-          <p className="panel-copy">Executive sedan, flagship luxury, and commanding SUV — each with a distinct presence.</p>
+          <p className="panel-copy">Business Class, First Class, and Luxury SUV — each reserved with the category you select.</p>
         </div>
         <div className="fleet-grid">
           {fleet.map((vehicle) => (
@@ -291,14 +302,14 @@ function HomePage({ fleet, airports }) {
       <section className="process-section">
         <div className="section-head center">
           <span className="eyebrow">How reservations work</span>
-          <h2>Effortless from request to arrival.</h2>
+          <h2>Clear steps from request to confirmation.</h2>
         </div>
-        <div className="steps-grid">
-          {['Choose your journey', 'Select vehicle', 'Confirm details', 'Travel in comfort'].map((step, index) => (
-            <div className="step-box" key={step}>
+        <div className="steps-grid process-steps">
+          {processSteps.map((step, index) => (
+            <div className="step-box" key={step.title}>
               <span>0{index + 1}</span>
-              <h3>{step}</h3>
-              <p>Professional coordination and polished service, tailored to your route and preferences.</p>
+              <h3>{step.title}</h3>
+              <p>{step.copy}</p>
             </div>
           ))}
         </div>
@@ -309,11 +320,14 @@ function HomePage({ fleet, airports }) {
 
 function FleetPage({ fleet }) {
   return (
-    <main className="page-shell">
+    <main className="page-shell fleet-page">
       <div className="section-head">
         <span className="eyebrow">Fleet overview</span>
-        <h2>Premium categories for every type of client journey.</h2>
-        <p className="panel-copy">Business Class leads with executive presence, First Class is the flagship sedan, and Luxury SUV delivers spacious prestige.</p>
+        <h2>Premium categories for every client journey.</h2>
+        <p className="panel-copy">
+          Business Class presents the Mercedes E-Class or Similar standard, First Class is the Mercedes-Benz S-Class,
+          and Luxury SUV is the Cadillac Escalade. Reserve a category to open booking with that vehicle preselected.
+        </p>
       </div>
       <div className="fleet-list">
         {fleet.map((vehicle) => (
@@ -1420,8 +1434,7 @@ function AuthPage({ authMode, setAuthMode, authForm, onFieldChange, errors, onSu
 
 function ContactPage() {
   const [form, setForm] = useState({ name: '', email: '', message: '' });
-  const [sent, setSent] = useState(false);
-  const { errors, clearErrors, applyErrors, revalidateField } = useFormErrors();
+  const { errors, applyErrors, revalidateField, setFieldError } = useFormErrors();
 
   const onChange = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -1439,8 +1452,10 @@ function ContactPage() {
     if (!form.message.trim()) nextErrors.message = 'Tell us how we can help.';
     else if (form.message.trim().length < 10) nextErrors.message = 'Please include a bit more detail.';
     if (!applyErrors(nextErrors, ['name', 'email', 'message'])) return;
-    clearErrors();
-    setSent(true);
+    setFieldError(
+      'form',
+      'Online message delivery is not connected yet. Please email or call concierge using the contact details on this page.',
+    );
   };
 
   return (
@@ -1448,35 +1463,28 @@ function ContactPage() {
       <div className="section-head left">
         <span className="eyebrow">Contact</span>
         <h2>Concierge support for every route.</h2>
+        <p className="panel-copy">Reach the team directly. The form below helps you draft details, but messages are not stored or emailed from this site yet.</p>
       </div>
       <div className="contact-layout">
         <div className="contact-panel card-panel">
-          <p>Email: concierge@aureliachauffeur.com</p>
-          <p>Phone: +1 (212) 555-0188</p>
+          <p>Email: <a href="mailto:concierge@aureliachauffeur.com">concierge@aureliachauffeur.com</a></p>
+          <p>Phone: <a href="tel:+12125550188">+1 (212) 555-0188</a></p>
           <p>Hours: 24/7 for reservation and operational support</p>
         </div>
         <div className="card-panel">
-          {sent ? (
-            <div className="success-box compact">
-              <span className="eyebrow">Message received</span>
-              <h3>Thank you, {form.name}.</h3>
-              <p>Our concierge team will respond shortly.</p>
-            </div>
-          ) : (
-            <form className="ops-form" onSubmit={onSubmit} noValidate>
-              <Field name="name" label="Your name" error={errors.name}>
-                {(props) => <input {...props} type="text" value={form.name} onChange={(event) => onChange('name', event.target.value)} />}
-              </Field>
-              <Field name="email" label="Email" error={errors.email}>
-                {(props) => <input {...props} type="email" value={form.email} onChange={(event) => onChange('email', event.target.value)} />}
-              </Field>
-              <Field name="message" label="How can we help?" error={errors.message}>
-                {(props) => <textarea {...props} rows="4" value={form.message} onChange={(event) => onChange('message', event.target.value)} />}
-              </Field>
-              <FormBanner message={errors.form} />
-              <button type="submit" className="btn btn-primary">Send message</button>
-            </form>
-          )}
+          <form className="ops-form" onSubmit={onSubmit} noValidate>
+            <Field name="name" label="Your name" error={errors.name}>
+              {(props) => <input {...props} type="text" value={form.name} onChange={(event) => onChange('name', event.target.value)} />}
+            </Field>
+            <Field name="email" label="Email" error={errors.email}>
+              {(props) => <input {...props} type="email" value={form.email} onChange={(event) => onChange('email', event.target.value)} />}
+            </Field>
+            <Field name="message" label="How can we help?" error={errors.message}>
+              {(props) => <textarea {...props} rows="4" value={form.message} onChange={(event) => onChange('message', event.target.value)} />}
+            </Field>
+            <FormBanner message={errors.form} />
+            <button type="submit" className="btn btn-primary">Prepare message details</button>
+          </form>
         </div>
       </div>
     </main>
@@ -1500,9 +1508,9 @@ function Footer() {
     <footer className="footer">
       <div>
         <strong>Aurelia Chauffeur</strong>
-        <p>Premium airport and executive transportation.</p>
+        <p>Private airport chauffeur service for New Jersey and the Northeast corridor.</p>
       </div>
-      <div>
+      <div className="footer-links">
         <Link to="/fleet">Fleet</Link>
         <Link to="/booking">Booking</Link>
         <Link to="/contact">Contact</Link>

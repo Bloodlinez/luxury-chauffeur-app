@@ -46,7 +46,9 @@ export function isFuturePickup(date, time) {
 }
 
 export function formatStatus(status) {
-  return String(status || '').replaceAll('_', ' ');
+  return String(status || '')
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 export function shortReference(id) {
@@ -373,6 +375,51 @@ export function FleetVisual({ slug, name, description, image }) {
   );
 }
 
+export function resolveFleetCategory(param, fleet = []) {
+  const value = String(param || '').trim().toLowerCase().replace(/\s+/g, '-');
+  if (!value) return 'Business Class';
+  const match = fleet.find((item) => (
+    item.id === value
+    || String(item.category || '').toLowerCase() === value
+    || String(item.category || '').toLowerCase().replace(/\s+/g, '-') === value
+  ));
+  return match?.category || 'Business Class';
+}
+
+export const BOOKING_FIELD_STEPS = {
+  transferType: 1,
+  pickupAirport: 1,
+  destinationAirport: 1,
+  pickupAddressLine1: 1,
+  pickupAddressLine2: 1,
+  pickupCity: 1,
+  pickupState: 1,
+  pickupPostal: 1,
+  destinationAddressLine1: 1,
+  destinationAddressLine2: 1,
+  destinationCity: 1,
+  destinationState: 1,
+  destinationPostal: 1,
+  date: 1,
+  time: 1,
+  category: 2,
+  passengers: 2,
+  luggage: 2,
+  name: 3,
+  phone: 3,
+  flightNumber: 3,
+  notes: 3,
+};
+
+export function bookingStepForErrors(errors = {}) {
+  const keys = Object.keys(errors).filter((key) => key !== 'form');
+  if (!keys.length) return null;
+  return keys.reduce((earliest, key) => {
+    const step = BOOKING_FIELD_STEPS[key] || 1;
+    return Math.min(earliest, step);
+  }, 4);
+}
+
 export function FleetCard({ vehicle, layout = 'card' }) {
   const blurb = {
     'business-class': 'Understated executive travel for polished airport transfers and business itineraries.',
@@ -387,14 +434,14 @@ export function FleetCard({ vehicle, layout = 'card' }) {
           <h3>{vehicle.name}</h3>
           <span>{vehicle.description}</span>
         </div>
-        <strong>${vehicle.price}</strong>
+        <strong><span className="price-prefix">From</span> ${vehicle.price}</strong>
       </div>
       <p className="fleet-card-copy">{blurb}</p>
       <div className="spec-row fleet-spec-row">
         <span>{vehicle.seats} passengers</span>
         <span>{vehicle.luggage} luggage</span>
       </div>
-      <Link className="btn btn-primary small fleet-card-cta" to="/booking">
+      <Link className="btn btn-primary small fleet-card-cta" to={`/booking?category=${encodeURIComponent(vehicle.id)}`}>
         Reserve {vehicle.name}
       </Link>
     </>
