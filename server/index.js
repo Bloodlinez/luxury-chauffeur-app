@@ -69,6 +69,11 @@ const ALLOWED_FLEET_CATEGORIES = {
 };
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const FLEET_IMAGE_VERSION = '20261115c';
+
+function fleetImagePath(slug) {
+  return `/fleet/${slug}.jpg?v=${FLEET_IMAGE_VERSION}`;
+}
 
 const SERVICE_AREA_STATES = ['NJ', 'NY', 'PA'];
 const NJ_PICKUP_AIRPORTS = ['EWR', 'TEB', 'ACY', 'TTN'];
@@ -83,7 +88,7 @@ const fleetCatalog = [
     seats: 4,
     luggage: 3,
     amenities: ['Professional chauffeur', 'Climate control', 'Charging', 'Bottled water'],
-    image: '/fleet/business-class.jpg',
+    image: fleetImagePath('business-class'),
     basePrice: 220,
     available: true,
   },
@@ -96,7 +101,7 @@ const fleetCatalog = [
     seats: 4,
     luggage: 3,
     amenities: ['Executive leather seating', 'Quiet cabin', 'Complimentary refreshments', 'Privacy glass'],
-    image: '/fleet/first-class.jpg',
+    image: fleetImagePath('first-class'),
     basePrice: 310,
     available: true,
   },
@@ -109,7 +114,7 @@ const fleetCatalog = [
     seats: 6,
     luggage: 5,
     amenities: ['Extra luggage room', 'Executive seating', 'Premium climate control', 'Airport meet-and-greet'],
-    image: '/fleet/luxury-suv.jpg',
+    image: fleetImagePath('luxury-suv'),
     basePrice: 380,
     available: true,
   },
@@ -248,7 +253,7 @@ async function listFleet() {
       seats: Number(row.seats),
       luggage: Number(row.luggage),
       amenities: ['Professional chauffeur', 'Climate control', 'Executive comfort'],
-      image: `/fleet/${row.slug}.jpg`,
+      image: fleetImagePath(row.slug),
       imageReady: true,
       basePrice: Number(row.base_price),
       price: Number(row.base_price),
@@ -256,7 +261,7 @@ async function listFleet() {
     }));
   }
 
-  return fleetCatalog.map((entry) => ({ ...entry, price: entry.basePrice, imageReady: false }));
+  return fleetCatalog.map((entry) => ({ ...entry, price: entry.basePrice, imageReady: true }));
 }
 
 async function listReservationsForUser(userId) {

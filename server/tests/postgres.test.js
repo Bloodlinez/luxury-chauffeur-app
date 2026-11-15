@@ -150,6 +150,7 @@ test('PostgreSQL migrations are tracked and safe to rerun', async () => {
     '005_partner_fleet_management.sql',
     '006_airport_address_transfers.sql',
     '007_first_class_label.sql',
+    '008_clear_remote_fleet_images.sql',
   ]);
 
   const airports = await databasePool.query('select count(*)::int as count from public.airports');

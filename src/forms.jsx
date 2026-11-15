@@ -318,8 +318,16 @@ function FleetSilhouette({ slug }) {
   );
 }
 
+const FLEET_IMAGE_VERSION = '20261115c';
+
+function resolveFleetImageSrc(slug, image) {
+  if (slug) return `/fleet/${slug}.jpg?v=${FLEET_IMAGE_VERSION}`;
+  if (typeof image === 'string' && image.startsWith('/fleet/')) return image;
+  return null;
+}
+
 export function FleetVisual({ slug, name, description, image }) {
-  const src = image || (slug ? `/fleet/${slug}.jpg` : null);
+  const src = resolveFleetImageSrc(slug, image);
   const [failed, setFailed] = useState(false);
   const identity = FLEET_VISUAL_IDENTITY[slug] || {
     motif: 'Luxury vehicle',
