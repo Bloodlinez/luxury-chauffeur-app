@@ -1082,6 +1082,62 @@ textarea { resize: vertical; }
   gap: 14px;
 }
 
+.address-suggest-field {
+  position: relative;
+}
+
+.address-suggest {
+  position: relative;
+}
+
+.address-suggest-status {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.address-suggest-list {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  max-height: 280px;
+  overflow: auto;
+  background: #121417;
+  border: 1px solid rgba(198, 166, 103, 0.28);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.address-suggest-option {
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.address-suggest-option strong {
+  display: block;
+  color: var(--ivory);
+  font-weight: 600;
+}
+
+.address-suggest-meta {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-soft);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.address-suggest-option.active,
+.address-suggest-option:hover {
+  background: rgba(198, 166, 103, 0.12);
+}
+
 .success-box strong {
   display: block;
   font-size: 2rem;

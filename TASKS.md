@@ -37,6 +37,7 @@
 - [x] Test partner invitation, partner fleet isolation, and admin partner controls
 - [x] Test remaining customer account and booking validation workflows
 - [x] Add final luxury fleet photography assets under `public/fleet/`
-- [ ] Configure address autocomplete provider token for live suggestions
+- [x] Improve Mapbox address autocomplete UI, debounce, service-area filtering, and docs
+- [ ] Configure live `MAPBOX_TOKEN` in the deployment environment for production suggestions
 - [ ] Add deployment configuration for preview and production hosting
 - [ ] Verify no secrets or credential material are committed

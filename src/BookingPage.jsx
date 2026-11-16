@@ -53,36 +53,127 @@ function AddressFields({
   errors,
   onChange,
   suggestions,
+  suggestError,
+  isSuggesting,
   providerConfigured,
   onQueryChange,
+  onSelectSuggestion,
 }) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const blurTimerRef = useRef(null);
+  const fieldId = `field-${prefix}AddressLine1`;
+  const listboxId = `${prefix}-address-listbox`;
+  const errorId = `${fieldId}-error`;
+  const streetError = errors[`${prefix}AddressLine1`] || suggestError || '';
+  const showList = open && suggestions.length > 0;
+
+  useEffect(() => () => {
+    if (blurTimerRef.current) window.clearTimeout(blurTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    setActiveIndex(suggestions.length ? 0 : -1);
+  }, [suggestions]);
+
+  const selectSuggestion = (suggestion) => {
+    onSelectSuggestion?.(suggestion);
+    setOpen(false);
+    setActiveIndex(-1);
+  };
+
+  const onStreetKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      if (open) {
+        event.preventDefault();
+        setOpen(false);
+        setActiveIndex(-1);
+      }
+      return;
+    }
+    if (!suggestions.length) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => (current + 1) % suggestions.length);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => (current <= 0 ? suggestions.length - 1 : current - 1));
+      return;
+    }
+    if (event.key === 'Enter' && open && activeIndex >= 0 && suggestions[activeIndex]) {
+      event.preventDefault();
+      selectSuggestion(suggestions[activeIndex]);
+    }
+  };
+
   return (
     <div className="address-fields">
-      <Field name={`${prefix}AddressLine1`} label="Street address" error={errors[`${prefix}AddressLine1`]}>
-        {(props) => (
+      <div className={`field address-suggest-field ${streetError ? 'field-invalid' : ''}`.trim()}>
+        <label className="field-label" htmlFor={fieldId}>Street address</label>
+        <div className="address-suggest">
           <input
-            {...props}
+            id={fieldId}
+            name={`${prefix}AddressLine1`}
             type="text"
+            role="combobox"
+            aria-expanded={showList ? 'true' : 'false'}
+            aria-controls={listboxId}
+            aria-autocomplete="list"
+            aria-activedescendant={showList && activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
+            aria-invalid={streetError ? 'true' : 'false'}
+            aria-describedby={streetError ? errorId : undefined}
+            className={streetError ? 'input-invalid' : undefined}
             autoComplete="street-address"
-            list={suggestions.length ? `${prefix}-address-suggestions` : undefined}
             value={values.AddressLine1}
+            placeholder="1200 Boardwalk"
             onChange={(event) => {
               onChange('AddressLine1', event.target.value);
               onQueryChange?.(event.target.value);
+              setOpen(true);
             }}
-            placeholder="1200 Boardwalk"
+            onFocus={() => {
+              if (blurTimerRef.current) window.clearTimeout(blurTimerRef.current);
+              if (suggestions.length) setOpen(true);
+            }}
+            onBlur={() => {
+              blurTimerRef.current = window.setTimeout(() => setOpen(false), 120);
+            }}
+            onKeyDown={onStreetKeyDown}
           />
-        )}
-      </Field>
-      {suggestions.length > 0 && (
-        <datalist id={`${prefix}-address-suggestions`}>
-          {suggestions.map((item) => (
-            <option key={item.label} value={item.line1}>
-              {item.label}
-            </option>
-          ))}
-        </datalist>
-      )}
+          {isSuggesting && <span className="address-suggest-status">Searching addresses…</span>}
+          {showList && (
+            <ul className="address-suggest-list" role="listbox" id={listboxId}>
+              {suggestions.map((item, index) => {
+                const secondary = [item.city, item.state, item.postal].filter(Boolean).join(', ');
+                return (
+                  <li
+                    key={`${item.label}-${item.postal}-${index}`}
+                    id={`${listboxId}-option-${index}`}
+                    role="option"
+                    aria-selected={index === activeIndex}
+                    className={`address-suggest-option${index === activeIndex ? ' active' : ''}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      selectSuggestion(item);
+                    }}
+                    onMouseEnter={() => setActiveIndex(index)}
+                  >
+                    <strong>{item.line1}</strong>
+                    <span className="address-suggest-meta">{secondary || item.label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        {streetError ? (
+          <span className="field-error" id={errorId} role="alert">{streetError}</span>
+        ) : null}
+      </div>
       <Field name={`${prefix}AddressLine2`} label="Apt / suite" optional error={errors[`${prefix}AddressLine2`]}>
         {(props) => (
           <input {...props} type="text" value={values.AddressLine2} onChange={(event) => onChange('AddressLine2', event.target.value)} />
@@ -109,8 +200,8 @@ function AddressFields({
       </Field>
       <p className="panel-copy address-note">
         {providerConfigured
-          ? 'Suggestions are provided for convenience. Aurelia still validates service area from the submitted address fields and does not treat suggestions as verified geocodes.'
-          : 'Enter the address manually. Autocomplete will appear once an address provider token is configured.'}
+          ? 'Mapbox suggestions are a typing aid only. Selecting one does not verify the address; Aurelia still validates NJ/NY/PA service-area fields when quoting and booking.'
+          : 'Enter the address manually. Mapbox autocomplete appears after MAPBOX_TOKEN is configured on the API server.'}
       </p>
     </div>
   );
@@ -130,6 +221,13 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
   const [addressProviderConfigured, setAddressProviderConfigured] = useState(false);
   const [pickupSuggestions, setPickupSuggestions] = useState([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState([]);
+  const [pickupSuggestError, setPickupSuggestError] = useState('');
+  const [destinationSuggestError, setDestinationSuggestError] = useState('');
+  const [pickupSuggesting, setPickupSuggesting] = useState(false);
+  const [destinationSuggesting, setDestinationSuggesting] = useState(false);
+  const suggestTimersRef = useRef({ pickup: null, destination: null });
+  const suggestSeqRef = useRef({ pickup: 0, destination: 0 });
+  const suggestAbortRef = useRef({ pickup: null, destination: null });
   const { errors, clearErrors, applyErrors, applyApiErrors, revalidateField, setFieldError, setErrors } = useFormErrors();
 
   const njPickupAirports = useMemo(
@@ -187,6 +285,13 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
       .then((response) => response.json())
       .then((data) => setAddressProviderConfigured(Boolean(data.providerConfigured)))
       .catch(() => setAddressProviderConfigured(false));
+
+    return () => {
+      Object.values(suggestTimersRef.current).forEach((timer) => {
+        if (timer) window.clearTimeout(timer);
+      });
+      Object.values(suggestAbortRef.current).forEach((controller) => controller?.abort());
+    };
   }, []);
 
   const showBookingErrors = (payload, fallbackMessage) => {
@@ -199,37 +304,112 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
     return next;
   };
 
-  const requestSuggestions = async (query, target) => {
-    if (!query || query.trim().length < 3) {
-      if (target === 'pickup') setPickupSuggestions([]);
-      else setDestinationSuggestions([]);
-      return;
-    }
-    try {
-      const response = await fetch(`/api/address-suggest?q=${encodeURIComponent(query)}`);
-      const data = await response.json();
-      setAddressProviderConfigured(Boolean(data.providerConfigured));
-      const next = data.suggestions || [];
-      if (target === 'pickup') setPickupSuggestions(next);
-      else setDestinationSuggestions(next);
-    } catch {
-      if (target === 'pickup') setPickupSuggestions([]);
-      else setDestinationSuggestions([]);
+  const clearSuggestions = (target) => {
+    if (target === 'pickup') {
+      setPickupSuggestions([]);
+      setPickupSuggestError('');
+      setPickupSuggesting(false);
+    } else {
+      setDestinationSuggestions([]);
+      setDestinationSuggestError('');
+      setDestinationSuggesting(false);
     }
   };
 
+  const requestSuggestions = (query, target) => {
+    if (suggestTimersRef.current[target]) {
+      window.clearTimeout(suggestTimersRef.current[target]);
+      suggestTimersRef.current[target] = null;
+    }
+
+    const trimmed = String(query || '').trim();
+    if (trimmed.length < 3) {
+      suggestAbortRef.current[target]?.abort();
+      suggestSeqRef.current[target] += 1;
+      clearSuggestions(target);
+      return;
+    }
+
+    suggestTimersRef.current[target] = window.setTimeout(async () => {
+      const requestId = ++suggestSeqRef.current[target];
+      suggestAbortRef.current[target]?.abort();
+      const controller = new AbortController();
+      suggestAbortRef.current[target] = controller;
+
+      if (target === 'pickup') {
+        setPickupSuggesting(true);
+        setPickupSuggestError('');
+      } else {
+        setDestinationSuggesting(true);
+        setDestinationSuggestError('');
+      }
+
+      try {
+        const response = await fetch(`/api/address-suggest?q=${encodeURIComponent(trimmed)}`, {
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (requestId !== suggestSeqRef.current[target]) return;
+
+        setAddressProviderConfigured(Boolean(data.providerConfigured));
+        if (!response.ok) {
+          clearSuggestions(target);
+          const message = data.message || 'Address suggestions are temporarily unavailable. Continue with manual entry.';
+          if (target === 'pickup') setPickupSuggestError(message);
+          else setDestinationSuggestError(message);
+          return;
+        }
+
+        const next = Array.isArray(data.suggestions) ? data.suggestions.slice(0, 5) : [];
+        if (target === 'pickup') {
+          setPickupSuggestions(next);
+          setPickupSuggesting(false);
+          setPickupSuggestError('');
+        } else {
+          setDestinationSuggestions(next);
+          setDestinationSuggesting(false);
+          setDestinationSuggestError('');
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError' || requestId !== suggestSeqRef.current[target]) return;
+        clearSuggestions(target);
+        const message = 'Unable to reach address suggestions. Continue with manual entry.';
+        if (target === 'pickup') setPickupSuggestError(message);
+        else setDestinationSuggestError(message);
+      }
+    }, 350);
+  };
+
   const applySuggestion = (prefix, suggestion) => {
+    const nextState = SERVICE_AREA_STATES.includes(String(suggestion.state || '').toUpperCase())
+      ? String(suggestion.state).toUpperCase()
+      : 'NJ';
     setBooking((current) => ({
       ...current,
       [prefix]: {
         AddressLine1: suggestion.line1 || '',
-        AddressLine2: '',
+        AddressLine2: current[prefix]?.AddressLine2 || '',
         City: suggestion.city || '',
-        State: suggestion.state || 'NJ',
+        State: nextState,
         Postal: suggestion.postal || '',
       },
     }));
     setQuote(null);
+    if (prefix === 'pickup') {
+      setPickupSuggestions([]);
+      setPickupSuggestError('');
+    } else {
+      setDestinationSuggestions([]);
+      setDestinationSuggestError('');
+    }
+    setErrors((current) => {
+      const next = { ...current };
+      delete next[`${prefix}AddressLine1`];
+      delete next[`${prefix}City`];
+      delete next[`${prefix}State`];
+      delete next[`${prefix}Postal`];
+      return next;
+    });
   };
 
   const updateCapacity = (field, value) => {
@@ -523,16 +703,17 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
                       values={booking.destination}
                       errors={errors}
                       suggestions={destinationSuggestions}
+                      suggestError={destinationSuggestError}
+                      isSuggesting={destinationSuggesting}
                       providerConfigured={addressProviderConfigured}
                       onQueryChange={(query) => requestSuggestions(query, 'destination')}
+                      onSelectSuggestion={(suggestion) => applySuggestion('destination', suggestion)}
                       onChange={(field, value) => {
                         setBooking((current) => ({
                           ...current,
                           destination: { ...current.destination, [field]: value },
                         }));
                         setQuote(null);
-                        const suggestion = destinationSuggestions.find((item) => item.line1 === value);
-                        if (suggestion && field === 'AddressLine1') applySuggestion('destination', suggestion);
                       }}
                     />
                   </>
@@ -543,16 +724,17 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
                       values={booking.pickup}
                       errors={errors}
                       suggestions={pickupSuggestions}
+                      suggestError={pickupSuggestError}
+                      isSuggesting={pickupSuggesting}
                       providerConfigured={addressProviderConfigured}
                       onQueryChange={(query) => requestSuggestions(query, 'pickup')}
+                      onSelectSuggestion={(suggestion) => applySuggestion('pickup', suggestion)}
                       onChange={(field, value) => {
                         setBooking((current) => ({
                           ...current,
                           pickup: { ...current.pickup, [field]: value },
                         }));
                         setQuote(null);
-                        const suggestion = pickupSuggestions.find((item) => item.line1 === value);
-                        if (suggestion && field === 'AddressLine1') applySuggestion('pickup', suggestion);
                       }}
                     />
                     <Field name="destinationAirport" label="Destination airport" error={errors.destinationAirport}>

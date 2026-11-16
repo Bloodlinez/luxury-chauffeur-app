@@ -151,3 +151,79 @@ test('secure registration and server-generated quote produce pending confirmatio
   assert.equal(myReservations.body[0].customer_id, register.body.user.id);
   assert.match(String(myReservations.body[0].destination), /World Trade/i);
 });
+
+test('address-suggest stays manual-friendly without a Mapbox token and filters service area', async () => {
+  const previousToken = process.env.MAPBOX_TOKEN;
+  process.env.MAPBOX_TOKEN = 'replace-with-mapbox-token';
+
+  const unconfigured = await request(app).get('/api/address-suggest?q=1200');
+  assert.equal(unconfigured.status, 200);
+  assert.equal(unconfigured.body.providerConfigured, false);
+  assert.deepEqual(unconfigured.body.suggestions, []);
+  assert.match(String(unconfigured.body.message || ''), /MAPBOX_TOKEN|manual/i);
+
+  process.env.MAPBOX_TOKEN = 'test-mapbox-token';
+  const originalFetch = global.fetch;
+  let requestedUrl = '';
+  global.fetch = async (input) => {
+    requestedUrl = String(input);
+    return {
+      ok: true,
+      async json() {
+        return {
+          features: [
+            {
+              place_name: '1 World Trade Center, New York, New York 10007, United States',
+              text: 'World Trade Center',
+              address: '1',
+              center: [-74.013, 40.713],
+              context: [
+                { id: 'postcode.1', text: '10007' },
+                { id: 'place.1', text: 'New York' },
+                { id: 'region.1', short_code: 'US-NY', text: 'New York' },
+              ],
+            },
+            {
+              place_name: '9 Market St, San Francisco, California 94105, United States',
+              text: 'Market St',
+              address: '9',
+              center: [-122.4, 37.8],
+              context: [
+                { id: 'postcode.2', text: '94105' },
+                { id: 'place.2', text: 'San Francisco' },
+                { id: 'region.2', short_code: 'US-CA', text: 'California' },
+              ],
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  try {
+    const shortQuery = await request(app).get('/api/address-suggest?q=ab');
+    assert.equal(shortQuery.status, 200);
+    assert.equal(shortQuery.body.providerConfigured, true);
+    assert.deepEqual(shortQuery.body.suggestions, []);
+
+    const response = await request(app).get('/api/address-suggest?q=1%20World');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.providerConfigured, true);
+    assert.equal(response.body.suggestions.length, 1);
+    assert.equal(response.body.suggestions[0].line1, '1 World Trade Center');
+    assert.equal(response.body.suggestions[0].city, 'New York');
+    assert.equal(response.body.suggestions[0].state, 'NY');
+    assert.equal(response.body.suggestions[0].postal, '10007');
+    assert.equal(response.body.suggestions[0].verifiedByProvider, false);
+    assert.equal(response.body.suggestions[0].center, undefined);
+    assert.equal(response.body.suggestions[0].coordinates, undefined);
+    assert.match(requestedUrl, /mapbox\.com\/geocoding/);
+    assert.match(requestedUrl, /bbox=/);
+    assert.match(requestedUrl, /proximity=/);
+    assert.match(requestedUrl, /limit=5/);
+  } finally {
+    global.fetch = originalFetch;
+    if (previousToken === undefined) delete process.env.MAPBOX_TOKEN;
+    else process.env.MAPBOX_TOKEN = previousToken;
+  }
+});

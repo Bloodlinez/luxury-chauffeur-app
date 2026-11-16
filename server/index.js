@@ -646,6 +646,52 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 120 }));
 const authRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+const addressSuggestRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    providerConfigured: true,
+    message: 'Address suggestion requests are temporarily limited. Please wait a moment and try again, or enter the address manually.',
+    suggestions: [],
+  },
+});
+
+/** Approximate bounding box covering NJ, NY (incl. NYC), and PA for Mapbox bias. */
+const SERVICE_AREA_BBOX = '-80.52,38.85,-71.78,45.02';
+const SERVICE_AREA_PROXIMITY = '-74.006,40.713';
+
+function extractSuggestionState(feature) {
+  const context = feature?.context || [];
+  const region = context.find((item) => String(item.id || '').startsWith('region'));
+  if (!region) return '';
+  const short = String(region.short_code || '').replace(/^US-/i, '').toUpperCase();
+  if (SERVICE_AREA_STATES.includes(short)) return short;
+  const text = String(region.text || '').toLowerCase();
+  if (text.includes('new jersey')) return 'NJ';
+  if (text.includes('new york')) return 'NY';
+  if (text.includes('pennsylvania')) return 'PA';
+  return short;
+}
+
+function mapMapboxFeatureToSuggestion(feature) {
+  const context = feature?.context || [];
+  const place = context.find((item) => String(item.id || '').startsWith('place'))?.text
+    || context.find((item) => String(item.id || '').startsWith('locality'))?.text
+    || '';
+  const postcode = context.find((item) => String(item.id || '').startsWith('postcode'))?.text || '';
+  const state = extractSuggestionState(feature);
+  const line1 = feature?.address ? `${feature.address} ${feature.text}` : String(feature?.text || '');
+  return {
+    label: String(feature?.place_name || line1),
+    line1: line1.trim(),
+    city: place,
+    state,
+    postal: postcode,
+    verifiedByProvider: false,
+  };
+}
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Aurelia Chauffeur API', secureMode: true });
@@ -889,18 +935,22 @@ app.post('/api/auth/logout', (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/address-suggest', async (req, res) => {
-  const query = String(req.query.q || '').trim();
+app.get('/api/address-suggest', addressSuggestRateLimit, async (req, res) => {
+  const query = String(req.query.q || '').trim().slice(0, 120);
   const mapboxToken = process.env.MAPBOX_TOKEN;
   if (!mapboxToken || mapboxToken.startsWith('replace-with')) {
     return res.json({
       providerConfigured: false,
-      message: 'Address autocomplete is unavailable until an address provider token is configured. Manual entry remains supported.',
+      message: 'Address autocomplete is unavailable until MAPBOX_TOKEN is configured on the API server. Manual entry remains supported.',
       suggestions: [],
     });
   }
   if (query.length < 3) {
-    return res.json({ providerConfigured: true, suggestions: [] });
+    return res.json({
+      providerConfigured: true,
+      suggestions: [],
+      notice: 'Enter at least 3 characters to search. Selecting a suggestion does not verify the address.',
+    });
   }
 
   try {
@@ -908,33 +958,40 @@ app.get('/api/address-suggest', async (req, res) => {
     url.searchParams.set('access_token', mapboxToken);
     url.searchParams.set('country', 'US');
     url.searchParams.set('types', 'address');
+    url.searchParams.set('autocomplete', 'true');
     url.searchParams.set('limit', '5');
+    url.searchParams.set('bbox', SERVICE_AREA_BBOX);
+    url.searchParams.set('proximity', SERVICE_AREA_PROXIMITY);
     const response = await fetch(url);
     if (!response.ok) {
-      return res.status(502).json({ providerConfigured: true, message: 'Address suggestions are temporarily unavailable.', suggestions: [] });
+      return res.status(502).json({
+        providerConfigured: true,
+        message: 'Address suggestions are temporarily unavailable. You can continue with manual entry.',
+        suggestions: [],
+      });
     }
     const data = await response.json();
-    const suggestions = (data.features || []).map((feature) => {
-      const context = feature.context || [];
-      const region = context.find((item) => String(item.id).startsWith('region'))?.short_code?.replace(/^US-/, '') || '';
-      const place = context.find((item) => String(item.id).startsWith('place'))?.text || '';
-      const postcode = context.find((item) => String(item.id).startsWith('postcode'))?.text || '';
-      return {
-        label: feature.place_name,
-        line1: feature.address ? `${feature.address} ${feature.text}` : feature.text,
-        city: place,
-        state: region,
-        postal: postcode,
-        verifiedByProvider: false,
-      };
-    }).filter((item) => SERVICE_AREA_STATES.includes(String(item.state || '').toUpperCase()));
+    // Temporary geocoding: return only address text fields for immediate UI use.
+    // Do not expose or persist provider coordinates from this endpoint.
+    const suggestions = (data.features || [])
+      .map(mapMapboxFeatureToSuggestion)
+      .filter((item) => (
+        item.line1
+        && SERVICE_AREA_STATES.includes(String(item.state || '').toUpperCase())
+      ))
+      .slice(0, 5);
+
     res.json({
       providerConfigured: true,
       suggestions,
-      notice: 'Suggested addresses still require service-area validation and are not treated as fully geocoded confirmation.',
+      notice: 'Suggestions are convenience only. Aurelia validates NJ/NY/PA service-area fields on quote and booking and does not treat a selection as geocoded verification.',
     });
   } catch {
-    res.status(502).json({ providerConfigured: true, message: 'Address suggestions failed.', suggestions: [] });
+    res.status(502).json({
+      providerConfigured: true,
+      message: 'Address suggestions failed. You can continue with manual entry.',
+      suggestions: [],
+    });
   }
 });
 
