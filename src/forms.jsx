@@ -137,11 +137,11 @@ export function Field({
   const describedBy = error ? errorId : undefined;
 
   return (
-    <label className={`field ${error ? 'field-invalid' : ''} ${className}`.trim()} htmlFor={fieldId}>
-      <span className="field-label">
+    <div className={`field ${error ? 'field-invalid' : ''} ${className}`.trim()}>
+      <label className="field-label" htmlFor={fieldId}>
         {label}
         {optional ? <span className="optional-label">Optional</span> : null}
-      </span>
+      </label>
       {typeof children === 'function'
         ? children({
           id: fieldId,
@@ -156,7 +156,7 @@ export function Field({
           {error}
         </span>
       ) : null}
-    </label>
+    </div>
   );
 }
 

@@ -41,8 +41,8 @@ const defaultBooking = {
   date: '',
   time: '',
   flightNumber: '',
-  passengers: '2',
-  luggage: '2',
+  passengers: '1',
+  luggage: '1',
   notes: '',
   category: 'Business Class',
 };
@@ -248,10 +248,15 @@ export default function BookingPage({ airports, fleet, user, onBookingSuccess })
 
   useEffect(() => {
     if (!fleet.length) return;
-    const resolved = resolveFleetCategory(categoryQuery, fleet);
-    setBooking((current) => (
-      current.category === resolved ? current : { ...current, category: resolved }
-    ));
+    setBooking((current) => {
+      if (categoryQuery) {
+        const resolved = resolveFleetCategory(categoryQuery, fleet);
+        return current.category === resolved ? current : { ...current, category: resolved };
+      }
+      const stillValid = fleet.some((item) => item.category === current.category);
+      if (stillValid) return current;
+      return { ...current, category: fleet[0]?.category || 'Business Class' };
+    });
   }, [categoryQuery, fleet]);
 
   const previousCategoryRef = useRef(booking.category);
