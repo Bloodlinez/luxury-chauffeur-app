@@ -1833,8 +1833,8 @@ app.post('/api/payments/checkout-session', requireAuth, async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       line_items: [{ price_data: { currency: 'usd', product_data: { name: 'Aurelia Chauffeur ride' }, unit_amount: Math.round(amount * 100) }, quantity: 1 }],
-      success_url: `${process.env.CLIENT_URL || 'http://localhost:5174'}/booking?paid=1`,
-      cancel_url: `${process.env.CLIENT_URL || 'http://localhost:5174'}/booking?paid=0`,
+      success_url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/booking?paid=1`,
+      cancel_url: `${process.env.CLIENT_URL || 'http://localhost:5173'}/booking?paid=0`,
     });
 
     res.json({ sessionId: session.id, url: session.url });

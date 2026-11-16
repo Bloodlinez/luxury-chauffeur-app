@@ -25,17 +25,22 @@ Mapbox temporary geocoding results are not persisted or cached by Aurelia. Only 
 ## Local setup
 
 1. Install dependencies with `npm install`.
-2. Create a PostgreSQL database, then copy `.env.example` to `.env` and set `DATABASE_URL`, a strong `JWT_SECRET`, and `CLIENT_URL` to the browser origin. Set `DATABASE_SSL=true` for a hosted PostgreSQL service that requires TLS.
-3. Optionally set `MAPBOX_TOKEN` for live address suggestions, and a Stripe test secret key as `STRIPE_SECRET_KEY` to enable Stripe Checkout test mode.
-4. Run `npm run dev`. The API applies the SQL files in `server/migrations` before listening; Vite is available at http://localhost:5173.
+2. Copy `.env.example` to `.env`. For the recommended local stack, set `MAPBOX_TOKEN` (and optional Stripe/Twilio keys) in `.env`. `npm run dev:local` provisions a temporary embedded PostgreSQL database and forces `CLIENT_URL` to `http://localhost:5173`.
+3. Start everything with one command: `npm run dev:local`.
+4. Open the app at **http://localhost:5173**. The Express API is reached only through the Vite `/api` proxy (default API listen port is `3002` for this script).
 
-The API intentionally refuses to start without `DATABASE_URL` outside the test runner. No demo user accounts or default production credentials are created.
+`npm run dev:local` fails fast with a clear message if port `5173` or the API port is already in use. Temporary database data is removed when the process exits.
+
+For an existing external PostgreSQL database instead of the embedded one, set `DATABASE_URL` (and `DATABASE_SSL` if required), then use `npm run dev`. The browser URL remains http://localhost:5173.
+
+The API intentionally refuses to start without `DATABASE_URL` outside the test runner and `dev:local`. No demo user accounts or default production credentials are created.
 
 ## Commands
 
-- `npm run dev` starts the API and Vite client.
-- `npm run build` creates the frontend production bundle.
-- `npm test` runs security tests and starts a real embedded PostgreSQL instance for migrations, persistence, assignment, and trip-status integration tests.
+- `npm run dev:local` — recommended local stack: embedded PostgreSQL, Express API, and Vite on http://localhost:5173.
+- `npm run dev` — API plus Vite against your configured `DATABASE_URL`.
+- `npm run build` — frontend production bundle.
+- `npm test` — security tests plus embedded PostgreSQL integration tests.
 
 ## API security
 
